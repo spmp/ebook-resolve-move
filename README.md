@@ -122,10 +122,43 @@ Configuration precedence is always:
 
 ## Metadata Behavior (Important)
 
-The script does not replace existing metadata fields.
+The script does not replace existing metadata fields. It only adds missing values.
 
-- EPUB: only adds missing `dc:title`, `dc:creator`, `dc:publisher`, `dc:language`, `dc:identifier` (ISBN)
-- PDF: only adds missing `/Title` and `/Author`
+### Supported formats and fields
+
+Current embedded metadata support is intentionally explicit:
+
+- `EPUB` (`.epub`)
+  - reads: `dc:title`, `dc:creator`, `dc:identifier` (ISBN-like), `dc:publisher`, `dc:language`, `dc:description`, `dc:date`, `dc:subject`
+  - writes (missing-only): `dc:title`, `dc:creator`, `dc:identifier`, `dc:publisher`, `dc:language`, `dc:description`, `dc:date`, `dc:subject`
+- `KEPUB` (`.kepub`, `.kepub.epub`)
+  - treated as EPUB container
+  - reads/writes same fields as EPUB
+- `PDF` (`.pdf`)
+  - reads: `/Title`, `/Author`, `/Producer` (publisher-ish), `/Subject`, `/Keywords`
+  - writes (missing-only): `/Title`, `/Author`, `/Subject`, `/Keywords`
+- `DOCX` (`.docx`)
+  - reads: title, author, description, created date, keywords
+  - writes (missing-only): title, author, description, created date, keywords
+- `ODT` (`.odt`)
+  - reads: title, creator, description, language, date, keywords
+  - writes (missing-only): title, creator, description, language, date, keywords
+- `FB2` (`.fb2`)
+  - reads: book-title, author, publisher, language, annotation/date, genres/keywords
+  - writes (missing-only): title, author, publisher, language, description/date, subjects
+- `FBZ` (`.fbz`)
+  - reads/writes FB2 metadata inside zipped container
+- `HTMLZ` (`.htmlz`) and `TXTZ` (`.txtz`)
+  - reads/writes OPF metadata when an OPF file exists in the zip container
+- `RTF` (`.rtf`)
+  - reads/writes `\\info` fields (`title`, `author`, `subject`, `keywords`) non-destructively
+- `MOBI` / `PRC` / `AZW` / `AZW1` / `AZW3`
+  - reads EXTH metadata when present
+  - write path currently conservative: reports `SKIP_WRITE_*` for planned enrichments in non-dry mode, so files are still moved but binary metadata is not mutated yet
+
+Unsupported today: `azw4`, `lrf`, `tpz`, and plain `txt` (non-zipped) embedded metadata writing.
+
+If you want richer fields or additional formats, please open a fixture-backed PR. This project welcomes incremental coverage improvements.
 
 If embedded metadata already has title and author but upstream matching is inconclusive, the file can still be moved using embedded title+author to avoid a no-op.
 
@@ -133,7 +166,7 @@ If embedded metadata already has title and author but upstream matching is incon
 
 High-level flow:
 
-1. Read embedded metadata (EPUB/PDF).
+1. Read embedded metadata (format-specific handler).
 2. Parse filename (`author - title` where possible).
 3. Build search query (prefer embedded author/title, then filename fields).
 4. Fetch candidates from Hardcover API.

@@ -5,6 +5,7 @@ import argparse
 import os
 import re
 import shutil
+import struct
 import sys
 import tempfile
 import time
@@ -90,6 +91,18 @@ DEFAULT_READARR_COMMAND = '{"name":"RescanFolders"}'
 EPUB_NS = {
     "container": "urn:oasis:names:tc:opendocument:xmlns:container",
     "opf": "http://www.idpf.org/2007/opf",
+    "dc": "http://purl.org/dc/elements/1.1/",
+}
+
+DOCX_NS = {
+    "cp": "http://schemas.openxmlformats.org/package/2006/metadata/core-properties",
+    "dc": "http://purl.org/dc/elements/1.1/",
+    "dcterms": "http://purl.org/dc/terms/",
+}
+
+ODF_NS = {
+    "office": "urn:oasis:names:tc:opendocument:xmlns:office:1.0",
+    "meta": "urn:oasis:names:tc:opendocument:xmlns:meta:1.0",
     "dc": "http://purl.org/dc/elements/1.1/",
 }
 
@@ -282,6 +295,9 @@ class EmbeddedMetadata:
     isbn: Optional[str] = None
     publisher: Optional[str] = None
     language: Optional[str] = None
+    description: Optional[str] = None
+    published_date: Optional[str] = None
+    subjects: Optional[List[str]] = None
     source: str = "none"
 
 
@@ -301,6 +317,9 @@ class WorkMetadata:
     publisher: Optional[str] = None
     language: Optional[str] = None
     full_title: Optional[str] = None
+    description: Optional[str] = None
+    published_date: Optional[str] = None
+    subjects: Optional[List[str]] = None
 
 
 @dataclass
@@ -367,14 +386,95 @@ def read_epub_metadata(path: Path) -> EmbeddedMetadata:
             isbn = raw
             break
 
+    subjects: List[str] = []
+    for subject_node in opf_root.findall(".//opf:metadata/dc:subject", EPUB_NS):
+        value = (subject_node.text or "").strip()
+        if value:
+            subjects.append(value)
+
     return EmbeddedMetadata(
         title=text(".//opf:metadata/dc:title"),
         author=text(".//opf:metadata/dc:creator"),
         isbn=isbn,
         publisher=text(".//opf:metadata/dc:publisher"),
         language=text(".//opf:metadata/dc:language"),
+        description=text(".//opf:metadata/dc:description"),
+        published_date=text(".//opf:metadata/dc:date"),
+        subjects=subjects or None,
         source="epub",
     )
+
+
+def read_opf_metadata_xml(opf_xml: bytes, source: str) -> EmbeddedMetadata:
+    opf_root = ET.fromstring(opf_xml)
+
+    def text(xpath: str) -> Optional[str]:
+        node = opf_root.find(xpath, EPUB_NS)
+        if node is None or node.text is None:
+            return None
+        value = node.text.strip()
+        return value or None
+
+    isbn = None
+    for ident in opf_root.findall(".//opf:metadata/dc:identifier", EPUB_NS):
+        raw = (ident.text or "").strip()
+        scheme = (
+            ident.attrib.get("{http://www.idpf.org/2007/opf}scheme")
+            or ident.attrib.get("scheme")
+            or ""
+        )
+        cleaned = re.sub(r"[-\s]", "", raw)
+        if "isbn" in scheme.lower() or re.fullmatch(r"(97[89])?\d{9}[\dXx]", cleaned):
+            isbn = raw
+            break
+
+    subjects: List[str] = []
+    for subject_node in opf_root.findall(".//opf:metadata/dc:subject", EPUB_NS):
+        value = (subject_node.text or "").strip()
+        if value:
+            subjects.append(value)
+
+    return EmbeddedMetadata(
+        title=text(".//opf:metadata/dc:title"),
+        author=text(".//opf:metadata/dc:creator"),
+        isbn=isbn,
+        publisher=text(".//opf:metadata/dc:publisher"),
+        language=text(".//opf:metadata/dc:language"),
+        description=text(".//opf:metadata/dc:description"),
+        published_date=text(".//opf:metadata/dc:date"),
+        subjects=subjects or None,
+        source=source,
+    )
+
+
+def extract_zip_opf_entry(path: Path) -> Optional[Tuple[str, bytes]]:
+    with zipfile.ZipFile(path, "r") as zf:
+        if "META-INF/container.xml" in zf.namelist():
+            container_xml = zf.read("META-INF/container.xml")
+            container_root = ET.fromstring(container_xml)
+            rootfile = container_root.find(".//container:rootfile", EPUB_NS)
+            if rootfile is not None:
+                opf_path = rootfile.attrib.get("full-path")
+                if opf_path and opf_path in zf.namelist():
+                    return opf_path, zf.read(opf_path)
+
+        for candidate in ("metadata.opf", "content.opf", "OEBPS/content.opf"):
+            if candidate in zf.namelist():
+                return candidate, zf.read(candidate)
+
+        for name in zf.namelist():
+            if name.lower().endswith(".opf"):
+                return name, zf.read(name)
+
+    return None
+
+
+def read_zip_opf_metadata(path: Path, source: str) -> EmbeddedMetadata:
+    found = extract_zip_opf_entry(path)
+    if not found:
+        return EmbeddedMetadata(source=source)
+    _, opf_xml = found
+    return read_opf_metadata_xml(opf_xml, source=source)
 
 
 def read_pdf_metadata(path: Path) -> EmbeddedMetadata:
@@ -396,16 +496,256 @@ def read_pdf_metadata(path: Path) -> EmbeddedMetadata:
         publisher=get("/Producer"),
         language=None,
         isbn=None,
+        description=get("/Subject"),
+        subjects=[part.strip() for part in (get("/Keywords") or "").split(",") if part.strip()] or None,
         source="pdf",
     )
 
 
+def read_docx_metadata(path: Path) -> EmbeddedMetadata:
+    with zipfile.ZipFile(path, "r") as zf:
+        try:
+            core_xml = zf.read("docProps/core.xml")
+        except KeyError:
+            return EmbeddedMetadata(source="docx")
+
+    root = ET.fromstring(core_xml)
+
+    def text(xpath: str) -> Optional[str]:
+        node = root.find(xpath, DOCX_NS)
+        if node is None or node.text is None:
+            return None
+        value = node.text.strip()
+        return value or None
+
+    subjects = [part.strip() for part in (text("./cp:keywords") or "").split(",") if part.strip()]
+
+    return EmbeddedMetadata(
+        title=text("./dc:title"),
+        author=text("./dc:creator"),
+        description=text("./dc:description"),
+        published_date=text("./dcterms:created"),
+        subjects=subjects or None,
+        source="docx",
+    )
+
+
+def read_odt_metadata(path: Path) -> EmbeddedMetadata:
+    with zipfile.ZipFile(path, "r") as zf:
+        try:
+            meta_xml = zf.read("meta.xml")
+        except KeyError:
+            return EmbeddedMetadata(source="odt")
+
+    root = ET.fromstring(meta_xml)
+    meta_node = root.find("./office:meta", ODF_NS)
+    if meta_node is None:
+        return EmbeddedMetadata(source="odt")
+
+    def text(xpath: str) -> Optional[str]:
+        node = meta_node.find(xpath, ODF_NS)
+        if node is None or node.text is None:
+            return None
+        value = node.text.strip()
+        return value or None
+
+    keywords_raw = text("./meta:keyword")
+    subjects = [part.strip() for part in (keywords_raw or "").split(",") if part.strip()]
+
+    return EmbeddedMetadata(
+        title=text("./dc:title"),
+        author=text("./dc:creator"),
+        description=text("./dc:description"),
+        published_date=text("./dc:date"),
+        language=text("./dc:language"),
+        subjects=subjects or None,
+        source="odt",
+    )
+
+
+def read_fb2_xml(xml_bytes: bytes, source: str) -> EmbeddedMetadata:
+    root = ET.fromstring(xml_bytes)
+
+    def find_text(paths: List[str]) -> Optional[str]:
+        for path in paths:
+            node = root.find(path)
+            if node is not None and node.text:
+                value = node.text.strip()
+                if value:
+                    return value
+        return None
+
+    title = find_text([
+        ".//{*}description/{*}title-info/{*}book-title",
+    ])
+
+    author_node = root.find(".//{*}description/{*}title-info/{*}author")
+    author = None
+    if author_node is not None:
+        first = (author_node.findtext("{*}first-name") or "").strip()
+        middle = (author_node.findtext("{*}middle-name") or "").strip()
+        last = (author_node.findtext("{*}last-name") or "").strip()
+        parts = [part for part in [first, middle, last] if part]
+        author = " ".join(parts) or None
+
+    publisher = find_text([
+        ".//{*}description/{*}publish-info/{*}publisher",
+    ])
+    language = find_text([
+        ".//{*}description/{*}title-info/{*}lang",
+    ])
+    published_date = find_text([
+        ".//{*}description/{*}publish-info/{*}year",
+        ".//{*}description/{*}title-info/{*}date",
+    ])
+    description = find_text([
+        ".//{*}description/{*}title-info/{*}annotation",
+    ])
+
+    subjects = []
+    for node in root.findall(".//{*}description/{*}title-info/{*}genre"):
+        value = (node.text or "").strip()
+        if value:
+            subjects.append(value)
+    for node in root.findall(".//{*}description/{*}title-info/{*}keywords"):
+        for part in (node.text or "").split(","):
+            value = part.strip()
+            if value:
+                subjects.append(value)
+
+    return EmbeddedMetadata(
+        title=title,
+        author=author,
+        publisher=publisher,
+        language=language,
+        description=description,
+        published_date=published_date,
+        subjects=list(dict.fromkeys(subjects)) or None,
+        source=source,
+    )
+
+
+def read_fb2_metadata(path: Path) -> EmbeddedMetadata:
+    return read_fb2_xml(path.read_bytes(), source="fb2")
+
+
+def read_fbz_metadata(path: Path) -> EmbeddedMetadata:
+    with zipfile.ZipFile(path, "r") as zf:
+        fb2_entries = [name for name in zf.namelist() if name.lower().endswith(".fb2")]
+        if not fb2_entries:
+            return EmbeddedMetadata(source="fbz")
+        return read_fb2_xml(zf.read(fb2_entries[0]), source="fbz")
+
+
+def read_rtf_metadata(path: Path) -> EmbeddedMetadata:
+    text = path.read_text(errors="ignore")
+    info_match = re.search(r"\{\\info(?P<body>.*?)\}", text, flags=re.DOTALL)
+    if not info_match:
+        return EmbeddedMetadata(source="rtf")
+
+    body = info_match.group("body")
+
+    def field(name: str) -> Optional[str]:
+        m = re.search(rf"\\{name}\s+([^\\\{{\}}]+)", body)
+        if not m:
+            return None
+        value = m.group(1).strip()
+        return value or None
+
+    subjects = [part.strip() for part in (field("keywords") or "").split(",") if part.strip()]
+    return EmbeddedMetadata(
+        title=field("title"),
+        author=field("author"),
+        description=field("subject"),
+        subjects=subjects or None,
+        source="rtf",
+    )
+
+
+def read_mobi_family_metadata(path: Path, source: str) -> EmbeddedMetadata:
+    raw = path.read_bytes()
+    if len(raw) < 128:
+        return EmbeddedMetadata(source=source)
+
+    title = raw[0:32].split(b"\x00", 1)[0].decode("latin-1", errors="ignore").strip() or None
+
+    records = struct.unpack(">H", raw[76:78])[0]
+    if records < 1:
+        return EmbeddedMetadata(title=title, source=source)
+
+    rec0_offset = struct.unpack(">L", raw[78:82])[0]
+    if rec0_offset + 24 > len(raw):
+        return EmbeddedMetadata(title=title, source=source)
+
+    rec1_offset = struct.unpack(">L", raw[86:90])[0] if records > 1 else len(raw)
+    rec0 = raw[rec0_offset:rec1_offset]
+
+    if len(rec0) < 24 or rec0[16:20] != b"MOBI":
+        return EmbeddedMetadata(title=title, source=source)
+
+    mobi_len = struct.unpack(">L", rec0[20:24])[0]
+    if 16 + mobi_len > len(rec0):
+        return EmbeddedMetadata(title=title, source=source)
+
+    exth_flags_offset = 16 + 0x80
+    if exth_flags_offset + 4 > len(rec0):
+        return EmbeddedMetadata(title=title, source=source)
+
+    exth_flags = struct.unpack(">L", rec0[exth_flags_offset:exth_flags_offset + 4])[0]
+    if not (exth_flags & 0x40):
+        return EmbeddedMetadata(title=title, source=source)
+
+    exth_start = 16 + mobi_len
+    if exth_start + 12 > len(rec0) or rec0[exth_start:exth_start + 4] != b"EXTH":
+        return EmbeddedMetadata(title=title, source=source)
+
+    exth_len = struct.unpack(">L", rec0[exth_start + 4:exth_start + 8])[0]
+    exth_end = min(exth_start + exth_len, len(rec0))
+    pos = exth_start + 12
+
+    records_map: Dict[int, List[str]] = {}
+    while pos + 8 <= exth_end:
+        rec_type = struct.unpack(">L", rec0[pos:pos + 4])[0]
+        rec_len = struct.unpack(">L", rec0[pos + 4:pos + 8])[0]
+        if rec_len < 8 or pos + rec_len > exth_end:
+            break
+        data = rec0[pos + 8:pos + rec_len].decode("utf-8", errors="ignore").strip()
+        if data:
+            records_map.setdefault(rec_type, []).append(data)
+        pos += rec_len
+
+    return EmbeddedMetadata(
+        title=title or (records_map.get(503, [None])[0]),
+        author=(records_map.get(100, [None])[0]),
+        publisher=(records_map.get(101, [None])[0]),
+        description=(records_map.get(103, [None])[0]),
+        isbn=(records_map.get(104, [None])[0]),
+        subjects=records_map.get(105),
+        source=source,
+    )
+
+
 def read_embedded_metadata(path: Path) -> EmbeddedMetadata:
+    lower_name = path.name.lower()
     ext = path.suffix.lower()
-    if ext == ".epub":
+    if ext == ".epub" or ext == ".kepub" or lower_name.endswith(".kepub.epub"):
         return read_epub_metadata(path)
     if ext == ".pdf":
         return read_pdf_metadata(path)
+    if ext == ".docx":
+        return read_docx_metadata(path)
+    if ext == ".odt":
+        return read_odt_metadata(path)
+    if ext == ".fb2":
+        return read_fb2_metadata(path)
+    if ext == ".fbz":
+        return read_fbz_metadata(path)
+    if ext in {".htmlz", ".txtz"}:
+        return read_zip_opf_metadata(path, source=ext.lstrip("."))
+    if ext == ".rtf":
+        return read_rtf_metadata(path)
+    if ext in {".mobi", ".azw", ".azw1", ".azw3", ".prc"}:
+        return read_mobi_family_metadata(path, source=ext.lstrip("."))
     return EmbeddedMetadata(source="unsupported")
 
 
@@ -444,6 +784,13 @@ def write_epub_metadata_non_destructive(
         planned.append(("language", resolved.language))
     if not existing.isbn and resolved.isbn13:
         planned.append(("identifier", resolved.isbn13))
+    if not existing.description and resolved.description:
+        planned.append(("description", resolved.description))
+    if not existing.published_date and resolved.published_date:
+        planned.append(("date", resolved.published_date))
+    if not existing.subjects and resolved.subjects:
+        for subject in resolved.subjects:
+            planned.append(("subject", subject))
 
     if not planned:
         return []
@@ -497,6 +844,21 @@ def write_epub_metadata_non_destructive(
                 node.text = resolved.isbn13
                 metadata_el.append(node)
                 wrote.append(f"WROTE identifier={resolved.isbn13}")
+        if not existing.description and resolved.description:
+            append_dc("description", resolved.description, "./dc:description")
+        if not existing.published_date and resolved.published_date:
+            append_dc("date", resolved.published_date, "./dc:date")
+        if not existing.subjects and resolved.subjects:
+            has_subject = any((node.text or "").strip() for node in metadata_el.findall("./dc:subject", EPUB_NS))
+            if not has_subject:
+                for subject in resolved.subjects:
+                    value = (subject or "").strip()
+                    if not value:
+                        continue
+                    node = ET.Element(f"{{{EPUB_NS['dc']}}}subject")
+                    node.text = value
+                    metadata_el.append(node)
+                    wrote.append(f"WROTE subject={value}")
 
         new_opf = ET.tostring(opf_root, encoding="utf-8", xml_declaration=True)
 
@@ -527,6 +889,12 @@ def write_pdf_metadata_non_destructive(
         updates["/Title"] = resolved.title
     if not existing.author and resolved.author:
         updates["/Author"] = resolved.author
+    if not existing.description and resolved.description:
+        updates["/Subject"] = resolved.description
+    if not existing.subjects and resolved.subjects:
+        joined_subjects = ", ".join(s.strip() for s in resolved.subjects if s and s.strip())
+        if joined_subjects:
+            updates["/Keywords"] = joined_subjects
 
     if not updates:
         return []
@@ -565,14 +933,406 @@ def write_pdf_metadata_non_destructive(
     return [f"WROTE {k}={v}" for k, v in updates.items()]
 
 
+def write_zip_entry(path: Path, entry_name: str, new_data: bytes) -> None:
+    with zipfile.ZipFile(path, "r") as zin:
+        tmp_fd, tmp_name = tempfile.mkstemp(suffix=path.suffix)
+        Path(tmp_name).unlink(missing_ok=True)
+        tmp_path = Path(tmp_name)
+        try:
+            with zipfile.ZipFile(tmp_path, "w") as zout:
+                for item in zin.infolist():
+                    data = zin.read(item.filename)
+                    if item.filename == entry_name:
+                        data = new_data
+                    zout.writestr(item, data)
+            shutil.move(str(tmp_path), str(path))
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+
+def write_docx_metadata_non_destructive(
+    path: Path, existing: EmbeddedMetadata, resolved: WorkMetadata, dry_run: bool
+) -> List[str]:
+    updates: Dict[str, str] = {}
+    if not existing.title and resolved.title:
+        updates["title"] = resolved.title
+    if not existing.author and resolved.author:
+        updates["creator"] = resolved.author
+    if not existing.description and resolved.description:
+        updates["description"] = resolved.description
+    if not existing.published_date and resolved.published_date:
+        updates["created"] = resolved.published_date
+    if not existing.subjects and resolved.subjects:
+        updates["keywords"] = ", ".join(s for s in resolved.subjects if s)
+
+    if not updates:
+        return []
+    if dry_run:
+        return [f"WOULD_WRITE_DOCX {k}={v}" for k, v in updates.items()]
+
+    with zipfile.ZipFile(path, "r") as zf:
+        if "docProps/core.xml" not in zf.namelist():
+            return []
+        core_xml = zf.read("docProps/core.xml")
+
+    root = ET.fromstring(core_xml)
+
+    def upsert(tag: str, ns: str, key: str) -> None:
+        if key not in updates:
+            return
+        node = root.find(f"./{tag}", DOCX_NS)
+        if node is None:
+            node = ET.SubElement(root, f"{{{DOCX_NS[ns]}}}{tag.split(':', 1)[1]}")
+        if not (node.text or "").strip():
+            node.text = updates[key]
+
+    upsert("dc:title", "dc", "title")
+    upsert("dc:creator", "dc", "creator")
+    upsert("dc:description", "dc", "description")
+    upsert("cp:keywords", "cp", "keywords")
+    upsert("dcterms:created", "dcterms", "created")
+
+    new_xml = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    write_zip_entry(path, "docProps/core.xml", new_xml)
+    return [f"WROTE {k}={v}" for k, v in updates.items()]
+
+
+def write_odt_metadata_non_destructive(
+    path: Path, existing: EmbeddedMetadata, resolved: WorkMetadata, dry_run: bool
+) -> List[str]:
+    updates: Dict[str, str] = {}
+    if not existing.title and resolved.title:
+        updates["title"] = resolved.title
+    if not existing.author and resolved.author:
+        updates["creator"] = resolved.author
+    if not existing.description and resolved.description:
+        updates["description"] = resolved.description
+    if not existing.language and resolved.language:
+        updates["language"] = resolved.language
+    if not existing.published_date and resolved.published_date:
+        updates["date"] = resolved.published_date
+    if not existing.subjects and resolved.subjects:
+        updates["keyword"] = ", ".join(s for s in resolved.subjects if s)
+
+    if not updates:
+        return []
+    if dry_run:
+        return [f"WOULD_WRITE_ODT {k}={v}" for k, v in updates.items()]
+
+    with zipfile.ZipFile(path, "r") as zf:
+        if "meta.xml" not in zf.namelist():
+            return []
+        meta_xml = zf.read("meta.xml")
+
+    root = ET.fromstring(meta_xml)
+    meta_node = root.find("./office:meta", ODF_NS)
+    if meta_node is None:
+        return []
+
+    def upsert(tag: str, ns: str, key: str) -> None:
+        if key not in updates:
+            return
+        node = meta_node.find(f"./{tag}", ODF_NS)
+        if node is None:
+            node = ET.SubElement(meta_node, f"{{{ODF_NS[ns]}}}{tag.split(':', 1)[1]}")
+        if not (node.text or "").strip():
+            node.text = updates[key]
+
+    upsert("dc:title", "dc", "title")
+    upsert("dc:creator", "dc", "creator")
+    upsert("dc:description", "dc", "description")
+    upsert("dc:language", "dc", "language")
+    upsert("dc:date", "dc", "date")
+    upsert("meta:keyword", "meta", "keyword")
+
+    new_xml = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    write_zip_entry(path, "meta.xml", new_xml)
+    return [f"WROTE {k}={v}" for k, v in updates.items()]
+
+
+def update_fb2_tree_non_destructive(root: ET.Element, existing: EmbeddedMetadata, resolved: WorkMetadata) -> List[str]:
+    wrote: List[str] = []
+
+    title_info = root.find(".//{*}description/{*}title-info")
+    if title_info is None:
+        return wrote
+
+    def has_text(path: str) -> bool:
+        node = title_info.find(path)
+        return node is not None and bool((node.text or "").strip())
+
+    if not existing.title and resolved.title and not has_text("{*}book-title"):
+        node = ET.SubElement(title_info, "book-title")
+        node.text = resolved.title
+        wrote.append(f"WROTE title={resolved.title}")
+
+    if not existing.author and resolved.author and title_info.find("{*}author") is None:
+        author_el = ET.SubElement(title_info, "author")
+        first = resolved.author.split()[0]
+        last = " ".join(resolved.author.split()[1:]) or first
+        ET.SubElement(author_el, "first-name").text = first
+        ET.SubElement(author_el, "last-name").text = last
+        wrote.append(f"WROTE author={resolved.author}")
+
+    if not existing.language and resolved.language and not has_text("{*}lang"):
+        node = ET.SubElement(title_info, "lang")
+        node.text = resolved.language
+        wrote.append(f"WROTE language={resolved.language}")
+
+    if not existing.description and resolved.description and title_info.find("{*}annotation") is None:
+        node = ET.SubElement(title_info, "annotation")
+        node.text = resolved.description
+        wrote.append(f"WROTE description={resolved.description}")
+
+    if not existing.subjects and resolved.subjects and not title_info.findall("{*}genre"):
+        for subject in resolved.subjects:
+            value = (subject or "").strip()
+            if not value:
+                continue
+            node = ET.SubElement(title_info, "genre")
+            node.text = value
+            wrote.append(f"WROTE subject={value}")
+
+    publish_info = root.find(".//{*}description/{*}publish-info")
+    if publish_info is None:
+        description = root.find(".//{*}description")
+        if description is not None:
+            publish_info = ET.SubElement(description, "publish-info")
+
+    if publish_info is not None:
+        if not existing.publisher and resolved.publisher:
+            pub_node = publish_info.find("{*}publisher")
+            if pub_node is None or not (pub_node.text or "").strip():
+                if pub_node is None:
+                    pub_node = ET.SubElement(publish_info, "publisher")
+                pub_node.text = resolved.publisher
+                wrote.append(f"WROTE publisher={resolved.publisher}")
+
+        if not existing.published_date and resolved.published_date:
+            year_node = publish_info.find("{*}year")
+            if year_node is None or not (year_node.text or "").strip():
+                if year_node is None:
+                    year_node = ET.SubElement(publish_info, "year")
+                year_node.text = resolved.published_date
+                wrote.append(f"WROTE date={resolved.published_date}")
+
+    return wrote
+
+
+def write_fb2_metadata_non_destructive(
+    path: Path, existing: EmbeddedMetadata, resolved: WorkMetadata, dry_run: bool
+) -> List[str]:
+    if dry_run:
+        planned = []
+        if not existing.title and resolved.title:
+            planned.append(f"WOULD_WRITE_FB2 title={resolved.title}")
+        if not existing.author and resolved.author:
+            planned.append(f"WOULD_WRITE_FB2 author={resolved.author}")
+        if not existing.publisher and resolved.publisher:
+            planned.append(f"WOULD_WRITE_FB2 publisher={resolved.publisher}")
+        if not existing.language and resolved.language:
+            planned.append(f"WOULD_WRITE_FB2 language={resolved.language}")
+        if not existing.description and resolved.description:
+            planned.append(f"WOULD_WRITE_FB2 description={resolved.description}")
+        if not existing.published_date and resolved.published_date:
+            planned.append(f"WOULD_WRITE_FB2 date={resolved.published_date}")
+        if not existing.subjects and resolved.subjects:
+            planned.extend(f"WOULD_WRITE_FB2 subject={s}" for s in resolved.subjects)
+        return planned
+
+    root = ET.fromstring(path.read_bytes())
+    wrote = update_fb2_tree_non_destructive(root, existing, resolved)
+    if not wrote:
+        return []
+
+    path.write_bytes(ET.tostring(root, encoding="utf-8", xml_declaration=True))
+    return wrote
+
+
+def write_fbz_metadata_non_destructive(
+    path: Path, existing: EmbeddedMetadata, resolved: WorkMetadata, dry_run: bool
+) -> List[str]:
+    with zipfile.ZipFile(path, "r") as zf:
+        fb2_entries = [name for name in zf.namelist() if name.lower().endswith(".fb2")]
+        if not fb2_entries:
+            return []
+        fb2_name = fb2_entries[0]
+        fb2_xml = zf.read(fb2_name)
+
+    root = ET.fromstring(fb2_xml)
+    wrote = update_fb2_tree_non_destructive(root, existing, resolved)
+    if not wrote:
+        return []
+
+    if dry_run:
+        return [line.replace("WROTE", "WOULD_WRITE_FBZ", 1) for line in wrote]
+
+    new_xml = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    write_zip_entry(path, fb2_name, new_xml)
+    return wrote
+
+
+def write_zip_opf_metadata_non_destructive(
+    path: Path, existing: EmbeddedMetadata, resolved: WorkMetadata, dry_run: bool, source: str
+) -> List[str]:
+    found = extract_zip_opf_entry(path)
+    if not found:
+        return []
+    opf_name, opf_xml = found
+
+    opf_root = ET.fromstring(opf_xml)
+    metadata_el = opf_root.find(".//opf:metadata", EPUB_NS)
+    if metadata_el is None:
+        return []
+
+    wrote: List[str] = []
+
+    def append_dc(local_name: str, value: str, xpath: str) -> None:
+        existing_node = metadata_el.find(xpath, EPUB_NS)
+        if existing_node is not None and (existing_node.text or "").strip():
+            return
+        node = ET.Element(f"{{{EPUB_NS['dc']}}}{local_name}")
+        node.text = value
+        metadata_el.append(node)
+        wrote.append(f"WROTE {local_name}={value}")
+
+    if not existing.title and resolved.title:
+        append_dc("title", resolved.title, "./dc:title")
+    if not existing.author and resolved.author:
+        append_dc("creator", resolved.author, "./dc:creator")
+    if not existing.publisher and resolved.publisher:
+        append_dc("publisher", resolved.publisher, "./dc:publisher")
+    if not existing.language and resolved.language:
+        append_dc("language", resolved.language, "./dc:language")
+    if not existing.description and resolved.description:
+        append_dc("description", resolved.description, "./dc:description")
+    if not existing.published_date and resolved.published_date:
+        append_dc("date", resolved.published_date, "./dc:date")
+    if not existing.subjects and resolved.subjects and not metadata_el.findall("./dc:subject", EPUB_NS):
+        for subject in resolved.subjects:
+            value = (subject or "").strip()
+            if not value:
+                continue
+            node = ET.Element(f"{{{EPUB_NS['dc']}}}subject")
+            node.text = value
+            metadata_el.append(node)
+            wrote.append(f"WROTE subject={value}")
+
+    if not existing.isbn and resolved.isbn13:
+        found_identifier = False
+        for ident in metadata_el.findall("./dc:identifier", EPUB_NS):
+            if (ident.text or "").strip():
+                found_identifier = True
+                break
+        if not found_identifier:
+            node = ET.Element(f"{{{EPUB_NS['dc']}}}identifier")
+            node.text = resolved.isbn13
+            metadata_el.append(node)
+            wrote.append(f"WROTE identifier={resolved.isbn13}")
+
+    if not wrote:
+        return []
+
+    if dry_run:
+        return [line.replace("WROTE", f"WOULD_WRITE_{source.upper()}", 1) for line in wrote]
+
+    new_xml = ET.tostring(opf_root, encoding="utf-8", xml_declaration=True)
+    write_zip_entry(path, opf_name, new_xml)
+    return wrote
+
+
+def write_rtf_metadata_non_destructive(
+    path: Path, existing: EmbeddedMetadata, resolved: WorkMetadata, dry_run: bool
+) -> List[str]:
+    updates: Dict[str, str] = {}
+    if not existing.title and resolved.title:
+        updates["title"] = resolved.title
+    if not existing.author and resolved.author:
+        updates["author"] = resolved.author
+    if not existing.description and resolved.description:
+        updates["subject"] = resolved.description
+    if not existing.subjects and resolved.subjects:
+        updates["keywords"] = ", ".join(s for s in resolved.subjects if s)
+
+    if not updates:
+        return []
+    if dry_run:
+        return [f"WOULD_WRITE_RTF {k}={v}" for k, v in updates.items()]
+
+    text = path.read_text(errors="ignore")
+    info_match = re.search(r"\{\\info(?P<body>.*?)\}", text, flags=re.DOTALL)
+    body = info_match.group("body") if info_match else ""
+
+    for key, value in updates.items():
+        if re.search(rf"\\{key}\s+", body):
+            continue
+        body += f"\\{key} {value}"
+
+    new_info = "{\\info" + body + "}"
+    if info_match:
+        text = text[:info_match.start()] + new_info + text[info_match.end():]
+    else:
+        insert_at = text.find("{")
+        if insert_at == -1:
+            text = "{\\rtf1" + new_info + text + "}"
+        else:
+            text = text[: insert_at + 1] + new_info + text[insert_at + 1 :]
+
+    path.write_text(text)
+    return [f"WROTE {k}={v}" for k, v in updates.items()]
+
+
+def write_mobi_family_metadata_non_destructive(
+    path: Path, existing: EmbeddedMetadata, resolved: WorkMetadata, dry_run: bool, source: str
+) -> List[str]:
+    updates: List[Tuple[str, str]] = []
+    if not existing.title and resolved.title:
+        updates.append(("title", resolved.title))
+    if not existing.author and resolved.author:
+        updates.append(("author", resolved.author))
+    if not existing.publisher and resolved.publisher:
+        updates.append(("publisher", resolved.publisher))
+    if not existing.description and resolved.description:
+        updates.append(("description", resolved.description))
+    if not existing.isbn and resolved.isbn13:
+        updates.append(("isbn", resolved.isbn13))
+    if not existing.subjects and resolved.subjects:
+        for subject in resolved.subjects:
+            updates.append(("subject", subject))
+
+    if not updates:
+        return []
+
+    # Safe placeholder: report planned enrichment but avoid mutating EXTH
+    # until full binary rewrite coverage is added for all variants.
+    if dry_run:
+        return [f"WOULD_WRITE_{source.upper()} {k}={v}" for k, v in updates]
+    return [f"SKIP_WRITE_{source.upper()} {k}={v}" for k, v in updates]
+
+
 def write_metadata_non_destructive(
     path: Path, existing: EmbeddedMetadata, resolved: WorkMetadata, dry_run: bool
 ) -> List[str]:
     ext = path.suffix.lower()
-    if ext == ".epub":
+    lower_name = path.name.lower()
+    if ext == ".epub" or ext == ".kepub" or lower_name.endswith(".kepub.epub"):
         return write_epub_metadata_non_destructive(path, existing, resolved, dry_run)
     if ext == ".pdf":
         return write_pdf_metadata_non_destructive(path, existing, resolved, dry_run)
+    if ext == ".docx":
+        return write_docx_metadata_non_destructive(path, existing, resolved, dry_run)
+    if ext == ".odt":
+        return write_odt_metadata_non_destructive(path, existing, resolved, dry_run)
+    if ext == ".fb2":
+        return write_fb2_metadata_non_destructive(path, existing, resolved, dry_run)
+    if ext == ".fbz":
+        return write_fbz_metadata_non_destructive(path, existing, resolved, dry_run)
+    if ext in {".htmlz", ".txtz"}:
+        return write_zip_opf_metadata_non_destructive(path, existing, resolved, dry_run, source=ext.lstrip("."))
+    if ext == ".rtf":
+        return write_rtf_metadata_non_destructive(path, existing, resolved, dry_run)
+    if ext in {".mobi", ".azw", ".azw1", ".azw3", ".prc"}:
+        return write_mobi_family_metadata_non_destructive(path, existing, resolved, dry_run, source=ext.lstrip("."))
     return []
 
 
@@ -604,6 +1364,37 @@ class HardcoverClient:
 # Parse exact /work schema
 # --------------------------------------------------
 def parse_work_metadata(work_id: int, payload: Dict[str, Any]) -> WorkMetadata:
+    def first_string(source: Dict[str, Any], *keys: str) -> Optional[str]:
+        for key in keys:
+            value = source.get(key)
+            if isinstance(value, str):
+                text = value.strip()
+                if text:
+                    return text
+        return None
+
+    def first_list_strings(source: Dict[str, Any], *keys: str) -> List[str]:
+        out: List[str] = []
+        seen = set()
+        for key in keys:
+            value = source.get(key)
+            if not isinstance(value, list):
+                continue
+            for item in value:
+                text = None
+                if isinstance(item, str):
+                    text = item.strip()
+                elif isinstance(item, dict):
+                    for candidate_key in ("Name", "name", "Tag", "tag", "Label", "label"):
+                        raw = item.get(candidate_key)
+                        if isinstance(raw, str) and raw.strip():
+                            text = raw.strip()
+                            break
+                if text and text not in seen:
+                    seen.add(text)
+                    out.append(text)
+        return out
+
     full_title = payload.get("FullTitle")
     short_title = payload.get("Title") or payload.get("ShortTitle")
 
@@ -618,6 +1409,15 @@ def parse_work_metadata(work_id: int, payload: Dict[str, Any]) -> WorkMetadata:
     isbn13 = None
     publisher = None
     language = None
+    description = first_string(payload, "Description", "Summary", "Synopsis")
+    published_date = first_string(
+        payload,
+        "ReleaseDate",
+        "PublicationDate",
+        "PublishedDate",
+        "PubDate",
+    )
+    subjects = first_list_strings(payload, "Subjects", "Genres", "Tags")
 
     if isinstance(books, list) and books:
         first_book = books[0]
@@ -625,6 +1425,19 @@ def parse_work_metadata(work_id: int, payload: Dict[str, Any]) -> WorkMetadata:
             isbn13 = first_book.get("Isbn13")
             publisher = first_book.get("Publisher")
             language = first_book.get("Language")
+
+            if not description:
+                description = first_string(first_book, "Description", "Summary", "Synopsis")
+            if not published_date:
+                published_date = first_string(
+                    first_book,
+                    "ReleaseDate",
+                    "PublicationDate",
+                    "PublishedDate",
+                    "PubDate",
+                )
+            if not subjects:
+                subjects = first_list_strings(first_book, "Subjects", "Genres", "Tags")
 
             # Prefer book-level FullTitle too, if present
             if not full_title:
@@ -644,6 +1457,9 @@ def parse_work_metadata(work_id: int, payload: Dict[str, Any]) -> WorkMetadata:
         publisher=publisher,
         language=language,
         full_title=full_title,
+        description=description,
+        published_date=published_date,
+        subjects=subjects or None,
     )
 
 
@@ -943,6 +1759,10 @@ def process_file(
             log(f"RESOLVED_TITLE     : {resolved.title!r}")
             log(f"RESOLVED_AUTHOR    : {resolved.author!r}")
             log(f"RESOLVED_ISBN13    : {resolved.isbn13!r}")
+            log(f"RESOLVED_PUBLISHER : {resolved.publisher!r}")
+            log(f"RESOLVED_LANGUAGE  : {resolved.language!r}")
+            log(f"RESOLVED_DATE      : {resolved.published_date!r}")
+            log(f"RESOLVED_SUBJECTS  : {resolved.subjects!r}")
         elif embedded.title and embedded.author:
             log("DECISION          : no strong match; moving using embedded title/author")
         else:
