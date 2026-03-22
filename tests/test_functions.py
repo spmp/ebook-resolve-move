@@ -233,6 +233,18 @@ class FunctionTests(unittest.TestCase):
         with mock.patch.object(erm, "read_mobi_family_metadata", return_value=erm.EmbeddedMetadata(source="mobi")):
             self.assertEqual(erm.read_embedded_metadata(Path("a.mobi")).source, "mobi")
 
+    def test_destination_path_includes_author_in_filename(self):
+        result = erm.destination_path(
+            Path("/library"),
+            "Kerry Patterson & Joseph Grenny",
+            "Crucial Conversations",
+            ".epub",
+        )
+        self.assertEqual(
+            str(result),
+            "/library/Kerry Patterson & Joseph Grenny/Crucial Conversations/Crucial Conversations - Kerry Patterson & Joseph Grenny.epub",
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

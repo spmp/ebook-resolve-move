@@ -1679,7 +1679,7 @@ def trigger_readarr_command(
 def destination_path(library_root: Path, author: str, title: str, ext: str) -> Path:
     author_fs = safe_fs(author)
     title_fs = safe_fs(title)
-    return library_root / author_fs / title_fs / f"{title_fs}{ext}"
+    return library_root / author_fs / title_fs / f"{title_fs} - {author_fs}{ext}"
 
 
 # --------------------------------------------------
@@ -1993,7 +1993,7 @@ def main() -> int:
     )
 
     parser = argparse.ArgumentParser(
-        description="Resolve ebook metadata via hardcover.bookinfo.pro, fill missing metadata, move to Author/Title/Title.ext, and optionally watch a directory.",
+        description="Resolve ebook metadata via hardcover.bookinfo.pro, fill missing metadata, move to Author/Title/Title - Author.ext, and optionally watch a directory.",
         epilog=env_help,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

@@ -4,7 +4,7 @@ A safety-first ebook ingestion script for:
 
 - metadata lookup using `hardcover.bookinfo.pro`
 - non-destructive metadata enrichment (add missing fields, never overwrite existing fields)
-- move files into an `Author/Title/Title.ext` structure
+- move files into an `Author/Title/Title - Author.ext` structure
 - optional post-move sync triggers for Kavita and Readarr
 
 This project is intentionally conservative where source metadata is weak, and intentionally practical where source metadata is already strong enough to move safely.
