@@ -144,6 +144,7 @@ def run_process_no_metadata_case(filename: str, works: Dict[int, Dict[str, objec
             readarr_api_key=None,
             readarr_command_json='{"name":"RescanFolders"}',
             settle_seconds=1.5,
+            overwrite_existing=False,
         )
 
         with mock.patch.object(erm, "HardcoverClient", FakeClient), mock.patch.object(
@@ -290,6 +291,7 @@ class MatchingBehaviorTests(unittest.TestCase):
                 readarr_api_key=None,
                 readarr_command_json='{"name":"RescanFolders"}',
                 settle_seconds=1.5,
+                overwrite_existing=False,
             )
 
             with mock.patch.object(erm, "HardcoverClient", FakeClient), mock.patch.object(
@@ -329,6 +331,116 @@ class MatchingBehaviorTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(moved_count, 1)
         self.assertTrue(any("MOVED" in line for line in logs))
+
+    def test_process_collision_creates_suffix_when_overwrite_disabled(self):
+        class FakeClient:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def search(self, _query):
+                return []
+
+            def work(self, _work_id):
+                return {}
+
+            def close(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            library = tmp_path / "library"
+            library.mkdir(parents=True, exist_ok=True)
+            incoming = tmp_path / "incoming.epub"
+            incoming.write_bytes(b"new")
+
+            base_dest = erm.destination_path(library, "Known Author", "Known Title", ".epub")
+            base_dest.parent.mkdir(parents=True, exist_ok=True)
+            base_dest.write_bytes(b"old")
+
+            config = erm.AppConfig(
+                api_base="https://example.invalid",
+                dry_run=False,
+                min_score=0.82,
+                min_margin=0.08,
+                kavita_scan=False,
+                kavita_url="http://127.0.0.1:5000",
+                kavita_api_key=None,
+                kavita_library_id=None,
+                readarr_scan=False,
+                readarr_url="http://127.0.0.1:8787",
+                readarr_api_key=None,
+                readarr_command_json='{"name":"RescanFolders"}',
+                settle_seconds=1.5,
+                overwrite_existing=False,
+            )
+
+            with mock.patch.object(erm, "HardcoverClient", FakeClient), mock.patch.object(
+                erm,
+                "read_embedded_metadata",
+                return_value=erm.EmbeddedMetadata(title="Known Title", author="Known Author", source="epub"),
+            ), mock.patch.object(erm, "write_metadata_non_destructive", return_value=[]), mock.patch.object(erm, "log"):
+                exit_code = erm.process_file(incoming, library, config)
+
+            self.assertEqual(exit_code, 0)
+            self.assertTrue(base_dest.exists())
+            suffixed = base_dest.with_name("Known Title - Known Author (2).epub")
+            self.assertTrue(suffixed.exists())
+            self.assertEqual(base_dest.read_bytes(), b"old")
+
+    def test_process_collision_overwrites_when_enabled(self):
+        class FakeClient:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def search(self, _query):
+                return []
+
+            def work(self, _work_id):
+                return {}
+
+            def close(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            library = tmp_path / "library"
+            library.mkdir(parents=True, exist_ok=True)
+            incoming = tmp_path / "incoming.epub"
+            incoming.write_bytes(b"new")
+
+            base_dest = erm.destination_path(library, "Known Author", "Known Title", ".epub")
+            base_dest.parent.mkdir(parents=True, exist_ok=True)
+            base_dest.write_bytes(b"old")
+
+            config = erm.AppConfig(
+                api_base="https://example.invalid",
+                dry_run=False,
+                min_score=0.82,
+                min_margin=0.08,
+                kavita_scan=False,
+                kavita_url="http://127.0.0.1:5000",
+                kavita_api_key=None,
+                kavita_library_id=None,
+                readarr_scan=False,
+                readarr_url="http://127.0.0.1:8787",
+                readarr_api_key=None,
+                readarr_command_json='{"name":"RescanFolders"}',
+                settle_seconds=1.5,
+                overwrite_existing=True,
+            )
+
+            with mock.patch.object(erm, "HardcoverClient", FakeClient), mock.patch.object(
+                erm,
+                "read_embedded_metadata",
+                return_value=erm.EmbeddedMetadata(title="Known Title", author="Known Author", source="epub"),
+            ), mock.patch.object(erm, "write_metadata_non_destructive", return_value=[]), mock.patch.object(erm, "log"):
+                exit_code = erm.process_file(incoming, library, config)
+
+            self.assertEqual(exit_code, 0)
+            self.assertTrue(base_dest.exists())
+            self.assertEqual(base_dest.read_bytes(), b"new")
+            suffixed = base_dest.with_name("Known Title - Known Author (2).epub")
+            self.assertFalse(suffixed.exists())
 
 
 if __name__ == "__main__":

@@ -347,6 +347,7 @@ class AppConfig:
     readarr_api_key: Optional[str]
     readarr_command_json: str
     settle_seconds: float
+    overwrite_existing: bool
 
 
 # --------------------------------------------------
@@ -1783,12 +1784,17 @@ def process_file(
             log(line)
 
         dest = destination_path(library_root, final_author, final_title, file_path.suffix.lower())
-        dest = unique_path(dest)
+        if not config.overwrite_existing:
+            dest = unique_path(dest)
 
         if config.dry_run:
+            if config.overwrite_existing and dest.exists():
+                log(f"WOULD_OVERWRITE   : {dest}")
             log(f"WOULD_MOVE        : {file_path} -> {dest}")
         else:
             ensure_parent(dest)
+            if config.overwrite_existing and dest.exists() and dest.is_file():
+                dest.unlink()
             shutil.move(str(file_path), str(dest))
             log(f"MOVED             : {file_path} -> {dest}")
 
@@ -1952,6 +1958,11 @@ def build_config(args: argparse.Namespace) -> AppConfig:
         if args.settle_seconds is not None
         else env_float("EBOOK_SETTLE_SECONDS", 1.5)
     )
+    overwrite_existing = (
+        args.overwrite_existing
+        if args.overwrite_existing is not None
+        else env_bool("EBOOK_OVERWRITE_EXISTING", False)
+    )
 
     return AppConfig(
         api_base=api_base,
@@ -1967,6 +1978,7 @@ def build_config(args: argparse.Namespace) -> AppConfig:
         readarr_api_key=readarr_api_key,
         readarr_command_json=readarr_command_json,
         settle_seconds=settle_seconds,
+        overwrite_existing=overwrite_existing,
     )
 
 
@@ -1989,7 +2001,8 @@ def main() -> int:
         "  EBOOK_READARR_URL\n"
         "  EBOOK_READARR_API_KEY\n"
         "  EBOOK_READARR_COMMAND_JSON\n"
-        "  EBOOK_SETTLE_SECONDS"
+        "  EBOOK_SETTLE_SECONDS\n"
+        "  EBOOK_OVERWRITE_EXISTING"
     )
 
     parser = argparse.ArgumentParser(
@@ -2011,6 +2024,12 @@ def main() -> int:
     parser.add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=None, help="Show what would happen (or EBOOK_DRY_RUN)")
     parser.add_argument("--min-score", type=float, default=None, help="Minimum score to accept a match (or EBOOK_MIN_SCORE)")
     parser.add_argument("--min-margin", type=float, default=None, help="Minimum lead over second-best match (or EBOOK_MIN_MARGIN)")
+    parser.add_argument(
+        "--overwrite-existing",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Overwrite destination file if it already exists (or EBOOK_OVERWRITE_EXISTING)",
+    )
 
     parser.add_argument("--kavita-scan", action=argparse.BooleanOptionalAction, default=None, help="Trigger Kavita scan after successful move (or EBOOK_KAVITA_SCAN)")
     parser.add_argument("--kavita-url", default=None, help="Kavita base URL (or EBOOK_KAVITA_URL)")

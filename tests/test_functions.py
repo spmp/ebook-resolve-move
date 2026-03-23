@@ -1,4 +1,5 @@
 import unittest
+from argparse import Namespace
 from pathlib import Path
 from unittest import mock
 
@@ -244,6 +245,28 @@ class FunctionTests(unittest.TestCase):
             str(result),
             "/library/Kerry Patterson & Joseph Grenny/Crucial Conversations/Crucial Conversations - Kerry Patterson & Joseph Grenny.epub",
         )
+
+    def test_build_config_reads_overwrite_existing_from_env(self):
+        args = Namespace(
+            api_base=None,
+            dry_run=None,
+            min_score=None,
+            min_margin=None,
+            overwrite_existing=None,
+            kavita_scan=None,
+            kavita_url=None,
+            kavita_api_key=None,
+            kavita_library_id=None,
+            readarr_scan=None,
+            readarr_url=None,
+            readarr_api_key=None,
+            readarr_command_json=None,
+            settle_seconds=None,
+        )
+
+        with mock.patch.dict("os.environ", {"EBOOK_OVERWRITE_EXISTING": "true"}, clear=False):
+            config = erm.build_config(args)
+        self.assertTrue(config.overwrite_existing)
 
 
 if __name__ == "__main__":

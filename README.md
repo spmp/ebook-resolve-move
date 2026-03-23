@@ -88,6 +88,7 @@ Options:
 - `--dry-run`, `--no-dry-run`
 - `--min-score MIN_SCORE`
 - `--min-margin MIN_MARGIN`
+- `--overwrite-existing`, `--no-overwrite-existing`
 - `--kavita-scan`, `--no-kavita-scan`
 - `--kavita-url KAVITA_URL`
 - `--kavita-api-key KAVITA_API_KEY`
@@ -110,6 +111,7 @@ Configuration precedence is always:
 - `EBOOK_DRY_RUN`
 - `EBOOK_MIN_SCORE`
 - `EBOOK_MIN_MARGIN`
+- `EBOOK_OVERWRITE_EXISTING`
 - `EBOOK_KAVITA_SCAN`
 - `EBOOK_KAVITA_URL`
 - `EBOOK_KAVITA_API_KEY`
@@ -123,6 +125,11 @@ Configuration precedence is always:
 ## Metadata Behavior (Important)
 
 The script does not replace existing metadata fields. It only adds missing values.
+
+File collision behavior:
+
+- default (`--no-overwrite-existing`): keep existing file and create a numbered suffix via `unique_path` (for example `(2)`, `(3)`, ...)
+- with `--overwrite-existing` or `EBOOK_OVERWRITE_EXISTING=true`: replace existing destination file
 
 ### Supported formats and fields
 
