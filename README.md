@@ -43,6 +43,32 @@ EBOOK_LIBRARY_ROOT=/path/to/library \
 python3 ebook_resolve_move.py /path/to/incoming/book.epub
 ```
 
+## Installation (pip)
+
+Install from local checkout:
+
+```bash
+python3 -m pip install .
+```
+
+Install directly from GitHub:
+
+```bash
+python3 -m pip install "git+https://github.com/<owner>/<repo>.git"
+```
+
+This installs the command:
+
+```bash
+ebook-resolve-move
+```
+
+You can still run the script directly as before:
+
+```bash
+python3 ebook_resolve_move.py /path/to/incoming/book.epub
+```
+
 Watch mode:
 
 ```bash

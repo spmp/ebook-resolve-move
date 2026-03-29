@@ -1,0 +1,2 @@
+[console_scripts]
+ebook-resolve-move = ebook_resolve_move:main

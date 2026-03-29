@@ -1,0 +1,12 @@
+LICENSE
+README.md
+ebook_resolve_move.py
+pyproject.toml
+ebook_resolve_move.egg-info/PKG-INFO
+ebook_resolve_move.egg-info/SOURCES.txt
+ebook_resolve_move.egg-info/dependency_links.txt
+ebook_resolve_move.egg-info/entry_points.txt
+ebook_resolve_move.egg-info/requires.txt
+ebook_resolve_move.egg-info/top_level.txt
+tests/test_functions.py
+tests/test_matching_behavior.py
