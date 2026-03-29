@@ -302,6 +302,7 @@ class FunctionTests(unittest.TestCase):
         args = Namespace(
             api_base=None,
             dry_run=None,
+            metadata_source=None,
             min_score=None,
             min_margin=None,
             overwrite_existing=None,
@@ -319,6 +320,12 @@ class FunctionTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {"EBOOK_OVERWRITE_EXISTING": "true"}, clear=False):
             config = erm.build_config(args)
         self.assertTrue(config.overwrite_existing)
+
+    def test_parse_metadata_sources(self):
+        self.assertEqual(erm.parse_metadata_sources("all"), ["hardcover", "goodreads"])
+        self.assertEqual(erm.parse_metadata_sources("hardcover"), ["hardcover"])
+        self.assertEqual(erm.parse_metadata_sources("goodreads,hardcover"), ["goodreads", "hardcover"])
+        self.assertEqual(erm.parse_metadata_sources("harcover"), ["hardcover"])
 
 
 if __name__ == "__main__":

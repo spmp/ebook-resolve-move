@@ -86,6 +86,7 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 DEFAULT_API_BASE = "https://hardcover.bookinfo.pro"
+DEFAULT_GOODREADS_API_BASE = "https://api.bookinfo.pro"
 DEFAULT_READARR_COMMAND = '{"name":"RescanFolders"}'
 
 EPUB_NS = {
@@ -194,6 +195,38 @@ def env_float(name: str, default: float) -> float:
         return float(value)
     except ValueError:
         return default
+
+
+def parse_metadata_sources(value: Optional[str]) -> List[str]:
+    raw = (value or "all").strip().lower()
+    aliases = {
+        "hardcover": "hardcover",
+        "harcover": "hardcover",
+        "goodreads": "goodreads",
+        "legacy": "goodreads",
+    }
+
+    expanded: List[str] = []
+    for token in [part.strip() for part in raw.split(",") if part.strip()]:
+        if token == "all":
+            expanded.extend(["hardcover", "goodreads"])
+            continue
+        mapped = aliases.get(token)
+        if not mapped:
+            raise ValueError(f"invalid metadata source: {token}")
+        expanded.append(mapped)
+
+    if not expanded:
+        expanded = ["hardcover", "goodreads"]
+
+    deduped: List[str] = []
+    seen = set()
+    for source in expanded:
+        if source in seen:
+            continue
+        seen.add(source)
+        deduped.append(source)
+    return deduped
 
 def title_score(a: Optional[str], b: Optional[str]) -> float:
     """
@@ -354,6 +387,7 @@ class Candidate:
 class AppConfig:
     api_base: str
     dry_run: bool
+    metadata_sources: List[str]
     min_score: float
     min_margin: float
     kavita_scan: bool
@@ -1636,6 +1670,22 @@ class HardcoverClient:
         self.client.close()
 
 
+def metadata_source_endpoint(source: str, config: AppConfig) -> str:
+    if source == "hardcover":
+        return config.api_base
+    if source == "goodreads":
+        return DEFAULT_GOODREADS_API_BASE
+    raise ValueError(f"unsupported metadata source: {source}")
+
+
+def metadata_source_provider_name(source: str) -> str:
+    if source == "hardcover":
+        return "Hardcover"
+    if source == "goodreads":
+        return "Goodreads"
+    return source
+
+
 # --------------------------------------------------
 # Parse exact /work schema
 # --------------------------------------------------
@@ -1987,123 +2037,132 @@ def process_file(
     query = build_query(embedded, filename_meta, file_path.name)
     log(f"SEARCH_QUERY      : {query!r}")
 
-    client = HardcoverClient(config.api_base)
-    try:
-        search_rows = client.search(query)
-        log(f"SEARCH_ROWS       : {len(search_rows)}")
+    log(f"METADATA_SOURCES  : {config.metadata_sources}")
 
-        work_ids: List[int] = []
-        for row in search_rows:
-            work_id = row.get("workId")
-            if isinstance(work_id, int) and work_id > 0:
-                work_ids.append(work_id)
+    candidates: List[Candidate] = []
+    all_work_ids: List[str] = []
+    for source in config.metadata_sources:
+        endpoint = metadata_source_endpoint(source, config)
+        provider_name = metadata_source_provider_name(source)
+        client = HardcoverClient(endpoint)
+        try:
+            search_rows = client.search(query)
+            log(f"SEARCH_ROWS_{source.upper():<6}: {len(search_rows)}")
 
-        work_ids = list(dict.fromkeys(work_ids))
-        log(f"WORK_IDS          : {work_ids}")
+            work_ids: List[int] = []
+            for row in search_rows:
+                work_id = row.get("workId")
+                if isinstance(work_id, int) and work_id > 0:
+                    work_ids.append(work_id)
 
-        candidates: List[Candidate] = []
-        for work_id in work_ids[:10]:
-            payload = client.work(work_id)
-            work = parse_work_metadata(work_id, payload)
-            candidate = score_work(embedded, filename_meta, work)
-            candidates.append(candidate)
+            work_ids = list(dict.fromkeys(work_ids))
+            all_work_ids.extend([f"{source}:{wid}" for wid in work_ids])
 
-        candidates.sort(key=lambda c: c.score_total, reverse=True)
+            for work_id in work_ids[:10]:
+                payload = client.work(work_id)
+                work = parse_work_metadata(work_id, payload)
+                work.metadata_provider = provider_name
+                work.metadata_provider_id = str(work_id)
+                work.metadata_provider_endpoint = endpoint
+                candidate = score_work(embedded, filename_meta, work)
+                candidates.append(candidate)
+        finally:
+            client.close()
 
-        for idx, candidate in enumerate(candidates[:5], start=1):
-            log(
-                f"CANDIDATE_{idx}       : "
-                f"workId={candidate.work.work_id} "
-                f"title={candidate.work.title!r} "
-                f"author={candidate.work.author!r} "
-                f"title_match={candidate.title_match!r} "
-                f"author_match={candidate.author_match!r} "
-                f"title_score={candidate.score_title:.2f} "
-                f"author_score={candidate.score_author:.2f} "
-                f"total={candidate.score_total:.2f}"
+    log(f"WORK_IDS          : {all_work_ids}")
+
+    candidates.sort(key=lambda c: c.score_total, reverse=True)
+
+    for idx, candidate in enumerate(candidates[:5], start=1):
+        log(
+            f"CANDIDATE_{idx}       : "
+            f"workId={candidate.work.work_id} "
+            f"title={candidate.work.title!r} "
+            f"author={candidate.work.author!r} "
+            f"title_match={candidate.title_match!r} "
+            f"author_match={candidate.author_match!r} "
+            f"title_score={candidate.score_title:.2f} "
+            f"author_score={candidate.score_author:.2f} "
+            f"total={candidate.score_total:.2f}"
+        )
+
+    chosen = choose_candidate(
+        candidates,
+        min_score=config.min_score,
+        min_margin=config.min_margin,
+        require_author_match=bool(score_author_basis),
+        min_author_score=0.45,
+    )
+    resolved: Optional[WorkMetadata] = None
+    if chosen:
+        resolved = chosen.work
+        log(f"CHOSEN_WORK_ID     : {resolved.work_id}")
+        log(f"RESOLVED_TITLE     : {resolved.title!r}")
+        log(f"RESOLVED_AUTHOR    : {resolved.author!r}")
+        log(f"RESOLVED_ISBN13    : {resolved.isbn13!r}")
+        log(f"RESOLVED_PUBLISHER : {resolved.publisher!r}")
+        log(f"RESOLVED_LANGUAGE  : {resolved.language!r}")
+        log(f"RESOLVED_DATE      : {resolved.published_date!r}")
+        log(f"RESOLVED_SUBJECTS  : {resolved.subjects!r}")
+        log(f"RESOLVED_PROVIDER  : {resolved.metadata_provider!r}")
+        log(f"RESOLVED_PROVIDER_ID: {resolved.metadata_provider_id!r}")
+    elif embedded.title and embedded.author:
+        log("DECISION          : no strong match; moving using embedded title/author")
+    else:
+        log("DECISION          : no non-ambiguous strong match; leaving untouched")
+        return 0
+
+    final_title = embedded.title or filename_meta.title or (resolved.title if resolved else None)
+    final_author = embedded.author or filename_meta.author or (resolved.author if resolved else None)
+
+    if not final_title or not final_author:
+        log("DECISION          : insufficient final metadata; leaving untouched")
+        return 0
+
+    writes: List[str] = []
+    if resolved:
+        writes = write_metadata_non_destructive(file_path, embedded, resolved, config.dry_run)
+    for line in writes:
+        log(line)
+
+    dest = destination_path(library_root, final_author, final_title, file_path.suffix.lower())
+    if not config.overwrite_existing:
+        dest = unique_path(dest)
+
+    if config.dry_run:
+        if config.overwrite_existing and dest.exists():
+            log(f"WOULD_OVERWRITE   : {dest}")
+        log(f"WOULD_MOVE        : {file_path} -> {dest}")
+    else:
+        ensure_parent(dest)
+        if config.overwrite_existing and dest.exists() and dest.is_file():
+            dest.unlink()
+        shutil.move(str(file_path), str(dest))
+        log(f"MOVED             : {file_path} -> {dest}")
+
+    if config.kavita_scan:
+        if not config.kavita_api_key:
+            log("KAVITA_SCAN       : skipped, no API key")
+        else:
+            trigger_kavita_scan(
+                kavita_url=config.kavita_url,
+                kavita_api_key=config.kavita_api_key,
+                kavita_library_id=config.kavita_library_id,
+                dry_run=config.dry_run,
             )
 
-        chosen = choose_candidate(
-            candidates,
-            min_score=config.min_score,
-            min_margin=config.min_margin,
-            require_author_match=bool(score_author_basis),
-            min_author_score=0.45,
-        )
-        resolved: Optional[WorkMetadata] = None
-        if chosen:
-            resolved = chosen.work
-            if not resolved.metadata_provider_endpoint:
-                resolved.metadata_provider_endpoint = config.api_base
-            log(f"CHOSEN_WORK_ID     : {resolved.work_id}")
-            log(f"RESOLVED_TITLE     : {resolved.title!r}")
-            log(f"RESOLVED_AUTHOR    : {resolved.author!r}")
-            log(f"RESOLVED_ISBN13    : {resolved.isbn13!r}")
-            log(f"RESOLVED_PUBLISHER : {resolved.publisher!r}")
-            log(f"RESOLVED_LANGUAGE  : {resolved.language!r}")
-            log(f"RESOLVED_DATE      : {resolved.published_date!r}")
-            log(f"RESOLVED_SUBJECTS  : {resolved.subjects!r}")
-            log(f"RESOLVED_PROVIDER  : {resolved.metadata_provider!r}")
-            log(f"RESOLVED_PROVIDER_ID: {resolved.metadata_provider_id!r}")
-        elif embedded.title and embedded.author:
-            log("DECISION          : no strong match; moving using embedded title/author")
+    if config.readarr_scan:
+        if not config.readarr_api_key:
+            log("READARR_COMMAND   : skipped, no API key")
         else:
-            log("DECISION          : no non-ambiguous strong match; leaving untouched")
-            return 0
+            trigger_readarr_command(
+                readarr_url=config.readarr_url,
+                readarr_api_key=config.readarr_api_key,
+                command_json=config.readarr_command_json,
+                dry_run=config.dry_run,
+            )
 
-        final_title = embedded.title or filename_meta.title or (resolved.title if resolved else None)
-        final_author = embedded.author or filename_meta.author or (resolved.author if resolved else None)
-
-        if not final_title or not final_author:
-            log("DECISION          : insufficient final metadata; leaving untouched")
-            return 0
-
-        writes: List[str] = []
-        if resolved:
-            writes = write_metadata_non_destructive(file_path, embedded, resolved, config.dry_run)
-        for line in writes:
-            log(line)
-
-        dest = destination_path(library_root, final_author, final_title, file_path.suffix.lower())
-        if not config.overwrite_existing:
-            dest = unique_path(dest)
-
-        if config.dry_run:
-            if config.overwrite_existing and dest.exists():
-                log(f"WOULD_OVERWRITE   : {dest}")
-            log(f"WOULD_MOVE        : {file_path} -> {dest}")
-        else:
-            ensure_parent(dest)
-            if config.overwrite_existing and dest.exists() and dest.is_file():
-                dest.unlink()
-            shutil.move(str(file_path), str(dest))
-            log(f"MOVED             : {file_path} -> {dest}")
-
-        if config.kavita_scan:
-            if not config.kavita_api_key:
-                log("KAVITA_SCAN       : skipped, no API key")
-            else:
-                trigger_kavita_scan(
-                    kavita_url=config.kavita_url,
-                    kavita_api_key=config.kavita_api_key,
-                    kavita_library_id=config.kavita_library_id,
-                    dry_run=config.dry_run,
-                )
-
-        if config.readarr_scan:
-            if not config.readarr_api_key:
-                log("READARR_COMMAND   : skipped, no API key")
-            else:
-                trigger_readarr_command(
-                    readarr_url=config.readarr_url,
-                    readarr_api_key=config.readarr_api_key,
-                    command_json=config.readarr_command_json,
-                    dry_run=config.dry_run,
-                )
-
-        return 0
-    finally:
-        client.close()
+    return 0
 
 
 # --------------------------------------------------
@@ -2213,6 +2272,11 @@ def run_watch_mode(
 def build_config(args: argparse.Namespace) -> AppConfig:
     api_base = args.api_base or env_str("EBOOK_API_BASE", DEFAULT_API_BASE) or DEFAULT_API_BASE
     dry_run = args.dry_run if args.dry_run is not None else env_bool("EBOOK_DRY_RUN", False)
+    metadata_sources = parse_metadata_sources(
+        args.metadata_source
+        if args.metadata_source is not None
+        else env_str("EBOOK_METADATA_SOURCES", "all")
+    )
     min_score = args.min_score if args.min_score is not None else env_float("EBOOK_MIN_SCORE", 0.82)
     min_margin = args.min_margin if args.min_margin is not None else env_float("EBOOK_MIN_MARGIN", 0.08)
 
@@ -2248,6 +2312,7 @@ def build_config(args: argparse.Namespace) -> AppConfig:
     return AppConfig(
         api_base=api_base,
         dry_run=dry_run,
+        metadata_sources=metadata_sources,
         min_score=min_score,
         min_margin=min_margin,
         kavita_scan=kavita_scan,
@@ -2272,6 +2337,7 @@ def main() -> int:
         "  EBOOK_LIBRARY_ROOT (required unless --library-root is passed)\n"
         "  EBOOK_API_BASE\n"
         "  EBOOK_DRY_RUN\n"
+        "  EBOOK_METADATA_SOURCES\n"
         "  EBOOK_MIN_SCORE\n"
         "  EBOOK_MIN_MARGIN\n"
         "  EBOOK_KAVITA_SCAN\n"
@@ -2303,6 +2369,11 @@ def main() -> int:
 
     parser.add_argument("--api-base", default=None, help="Book metadata API base (or EBOOK_API_BASE)")
     parser.add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=None, help="Show what would happen (or EBOOK_DRY_RUN)")
+    parser.add_argument(
+        "--metadata-source",
+        default=None,
+        help="Metadata source order: all|hardcover|goodreads or comma list (or EBOOK_METADATA_SOURCES)",
+    )
     parser.add_argument("--min-score", type=float, default=None, help="Minimum score to accept a match (or EBOOK_MIN_SCORE)")
     parser.add_argument("--min-margin", type=float, default=None, help="Minimum lead over second-best match (or EBOOK_MIN_MARGIN)")
     parser.add_argument(

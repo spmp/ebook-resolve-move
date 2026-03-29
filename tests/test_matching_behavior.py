@@ -133,6 +133,7 @@ def run_process_no_metadata_case(filename: str, works: Dict[int, Dict[str, objec
         config = erm.AppConfig(
             api_base="https://example.invalid",
             dry_run=False,
+            metadata_sources=["hardcover"],
             min_score=0.82,
             min_margin=0.08,
             kavita_scan=False,
@@ -280,6 +281,7 @@ class MatchingBehaviorTests(unittest.TestCase):
             config = erm.AppConfig(
                 api_base="https://example.invalid",
                 dry_run=False,
+                metadata_sources=["hardcover"],
                 min_score=0.82,
                 min_margin=0.08,
                 kavita_scan=False,
@@ -360,6 +362,7 @@ class MatchingBehaviorTests(unittest.TestCase):
             config = erm.AppConfig(
                 api_base="https://example.invalid",
                 dry_run=False,
+                metadata_sources=["hardcover"],
                 min_score=0.82,
                 min_margin=0.08,
                 kavita_scan=False,
@@ -415,6 +418,7 @@ class MatchingBehaviorTests(unittest.TestCase):
             config = erm.AppConfig(
                 api_base="https://example.invalid",
                 dry_run=False,
+                metadata_sources=["hardcover"],
                 min_score=0.82,
                 min_margin=0.08,
                 kavita_scan=False,
@@ -441,6 +445,68 @@ class MatchingBehaviorTests(unittest.TestCase):
             self.assertEqual(base_dest.read_bytes(), b"new")
             suffixed = base_dest.with_name("Known Title - Known Author (2).epub")
             self.assertFalse(suffixed.exists())
+
+    def test_fallback_metadata_source_used_when_primary_has_no_results(self):
+        class FakeClient:
+            def __init__(self, base_url, *_args, **_kwargs):
+                self.base_url = base_url
+
+            def search(self, _query):
+                if "hardcover" in self.base_url:
+                    return []
+                return [{"workId": 9001}]
+
+            def work(self, _work_id):
+                return build_payload("Fallback Title", "Fallback Author")
+
+            def close(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            incoming = tmp_path / "incoming.epub"
+            incoming.write_bytes(b"data")
+            library = tmp_path / "library"
+            library.mkdir(parents=True, exist_ok=True)
+
+            config = erm.AppConfig(
+                api_base="https://hardcover.bookinfo.pro",
+                dry_run=False,
+                metadata_sources=["hardcover", "goodreads"],
+                min_score=0.82,
+                min_margin=0.08,
+                kavita_scan=False,
+                kavita_url="http://127.0.0.1:5000",
+                kavita_api_key=None,
+                kavita_library_id=None,
+                readarr_scan=False,
+                readarr_url="http://127.0.0.1:8787",
+                readarr_api_key=None,
+                readarr_command_json='{"name":"RescanFolders"}',
+                settle_seconds=1.5,
+                overwrite_existing=False,
+            )
+
+            logs: List[str] = []
+            with mock.patch.object(erm, "HardcoverClient", FakeClient), mock.patch.object(
+                erm,
+                "read_embedded_metadata",
+                return_value=erm.EmbeddedMetadata(title=None, author=None, source="epub"),
+            ), mock.patch.object(erm, "parse_filename_metadata", return_value=erm.FilenameMetadata(title="Fallback Title", author="Fallback Author")), mock.patch.object(
+                erm, "write_metadata_non_destructive", return_value=[]
+            ), mock.patch.object(
+                erm,
+                "log",
+                side_effect=lambda line: logs.append(line),
+            ):
+                exit_code = erm.process_file(incoming, library, config)
+
+            self.assertEqual(exit_code, 0)
+            self.assertTrue(any("SEARCH_ROWS_HARDCOVER" in line and line.endswith(": 0") for line in logs))
+            self.assertTrue(any("SEARCH_ROWS_GOODREADS" in line and line.endswith(": 1") for line in logs))
+            self.assertTrue(any("RESOLVED_PROVIDER  : 'Goodreads'" in line for line in logs))
+            moved_files = list(library.rglob("*.epub"))
+            self.assertEqual(len(moved_files), 1)
 
 
 if __name__ == "__main__":

@@ -86,6 +86,7 @@ Options:
 - `--settle-seconds SETTLE_SECONDS`
 - `--api-base API_BASE`
 - `--dry-run`, `--no-dry-run`
+- `--metadata-source METADATA_SOURCE`
 - `--min-score MIN_SCORE`
 - `--min-margin MIN_MARGIN`
 - `--overwrite-existing`, `--no-overwrite-existing`
@@ -104,11 +105,18 @@ Configuration precedence is always:
 2. Environment variable
 3. built-in default
 
+Metadata source selection:
+
+- default: `all` -> `hardcover,goodreads`
+- single source: `hardcover` or `goodreads`
+- custom order: comma-separated list, e.g. `goodreads,hardcover`
+
 ## Environment Variables
 
 - `EBOOK_LIBRARY_ROOT` (required unless `--library-root` is set)
 - `EBOOK_API_BASE`
 - `EBOOK_DRY_RUN`
+- `EBOOK_METADATA_SOURCES`
 - `EBOOK_MIN_SCORE`
 - `EBOOK_MIN_MARGIN`
 - `EBOOK_OVERWRITE_EXISTING`
