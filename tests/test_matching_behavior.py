@@ -133,6 +133,7 @@ def run_process_no_metadata_case(filename: str, works: Dict[int, Dict[str, objec
         config = erm.AppConfig(
             api_base="https://example.invalid",
             dry_run=False,
+            log_level="DEBUG",
             metadata_sources=["hardcover"],
             min_score=0.82,
             min_margin=0.08,
@@ -281,6 +282,7 @@ class MatchingBehaviorTests(unittest.TestCase):
             config = erm.AppConfig(
                 api_base="https://example.invalid",
                 dry_run=False,
+                log_level="DEBUG",
                 metadata_sources=["hardcover"],
                 min_score=0.82,
                 min_margin=0.08,
@@ -364,6 +366,7 @@ class MatchingBehaviorTests(unittest.TestCase):
             config = erm.AppConfig(
                 api_base="https://example.invalid",
                 dry_run=False,
+                log_level="DEBUG",
                 metadata_sources=["hardcover"],
                 min_score=0.82,
                 min_margin=0.08,
@@ -420,6 +423,7 @@ class MatchingBehaviorTests(unittest.TestCase):
             config = erm.AppConfig(
                 api_base="https://example.invalid",
                 dry_run=False,
+                log_level="DEBUG",
                 metadata_sources=["hardcover"],
                 min_score=0.82,
                 min_margin=0.08,
@@ -474,6 +478,7 @@ class MatchingBehaviorTests(unittest.TestCase):
             config = erm.AppConfig(
                 api_base="https://hardcover.bookinfo.pro",
                 dry_run=False,
+                log_level="DEBUG",
                 metadata_sources=["hardcover", "goodreads"],
                 min_score=0.82,
                 min_margin=0.08,

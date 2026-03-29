@@ -129,15 +129,22 @@ TEMP_SUFFIXES = (
     ".download",
 )
 
+LOG_LEVELS = {"DEBUG", "WARN", "INFO"}
+ACTIVE_LOG_LEVEL = "DEBUG"
+
 
 # --------------------------------------------------
 # Utility helpers
 # --------------------------------------------------
 def log(msg: str) -> None:
+    if not should_emit_console_line(msg):
+        return
     print(msg, flush=True)
 
 
 def notify_openbooks(level: str, title: str, detail: Optional[str] = None) -> None:
+    if not should_emit_notification(level):
+        return
     payload: Dict[str, str] = {
         "level": level,
         "title": title,
@@ -145,6 +152,37 @@ def notify_openbooks(level: str, title: str, detail: Optional[str] = None) -> No
     if detail:
         payload["detail"] = detail
     log(f"OPENBOOKS_NOTIFY {json.dumps(payload, ensure_ascii=True)}")
+
+
+def set_active_log_level(level: str) -> None:
+    global ACTIVE_LOG_LEVEL
+    normalized = (level or "DEBUG").upper()
+    ACTIVE_LOG_LEVEL = normalized if normalized in LOG_LEVELS else "DEBUG"
+
+
+def should_emit_console_line(msg: str) -> bool:
+    if ACTIVE_LOG_LEVEL in {"DEBUG", "WARN"}:
+        return True
+
+    if msg.startswith("MOVED             :"):
+        return True
+    if msg.startswith("WOULD_MOVE        :"):
+        return True
+    if msg.startswith("DECISION          :"):
+        return True
+    if msg.startswith("OPENBOOKS_NOTIFY "):
+        return True
+
+    return False
+
+
+def should_emit_notification(level: str) -> bool:
+    normalized = (level or "").lower()
+    if ACTIVE_LOG_LEVEL == "DEBUG":
+        return True
+    if ACTIVE_LOG_LEVEL == "WARN":
+        return normalized in {"warn", "warning", "err", "error"}
+    return normalized in {"err", "error"}
 
 
 def norm_text(value: Optional[str]) -> str:
@@ -238,6 +276,13 @@ def parse_metadata_sources(value: Optional[str]) -> List[str]:
         seen.add(source)
         deduped.append(source)
     return deduped
+
+
+def parse_log_level(value: Optional[str]) -> str:
+    normalized = (value or "DEBUG").strip().upper()
+    if normalized not in LOG_LEVELS:
+        raise ValueError(f"invalid log level: {value}")
+    return normalized
 
 def title_score(a: Optional[str], b: Optional[str]) -> float:
     """
@@ -398,6 +443,7 @@ class Candidate:
 class AppConfig:
     api_base: str
     dry_run: bool
+    log_level: str
     metadata_sources: List[str]
     min_score: float
     min_margin: float
@@ -2029,6 +2075,7 @@ def process_file(
     library_root: Path,
     config: AppConfig,
 ) -> int:
+    set_active_log_level(config.log_level)
     embedded = read_embedded_metadata(file_path)
     filename_meta = parse_filename_metadata(file_path)
 
@@ -2299,6 +2346,11 @@ def run_watch_mode(
 def build_config(args: argparse.Namespace) -> AppConfig:
     api_base = args.api_base or env_str("EBOOK_API_BASE", DEFAULT_API_BASE) or DEFAULT_API_BASE
     dry_run = args.dry_run if args.dry_run is not None else env_bool("EBOOK_DRY_RUN", False)
+    log_level = parse_log_level(
+        args.log_level
+        if args.log_level is not None
+        else env_str("EBOOK_LOG_LEVEL", "DEBUG")
+    )
     metadata_sources = parse_metadata_sources(
         args.metadata_source
         if args.metadata_source is not None
@@ -2339,6 +2391,7 @@ def build_config(args: argparse.Namespace) -> AppConfig:
     return AppConfig(
         api_base=api_base,
         dry_run=dry_run,
+        log_level=log_level,
         metadata_sources=metadata_sources,
         min_score=min_score,
         min_margin=min_margin,
@@ -2364,6 +2417,7 @@ def main() -> int:
         "  EBOOK_LIBRARY_ROOT (required unless --library-root is passed)\n"
         "  EBOOK_API_BASE\n"
         "  EBOOK_DRY_RUN\n"
+        "  EBOOK_LOG_LEVEL\n"
         "  EBOOK_METADATA_SOURCES\n"
         "  EBOOK_MIN_SCORE\n"
         "  EBOOK_MIN_MARGIN\n"
@@ -2396,6 +2450,12 @@ def main() -> int:
 
     parser.add_argument("--api-base", default=None, help="Book metadata API base (or EBOOK_API_BASE)")
     parser.add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=None, help="Show what would happen (or EBOOK_DRY_RUN)")
+    parser.add_argument(
+        "--log-level",
+        default=None,
+        choices=["DEBUG", "WARN", "INFO", "debug", "warn", "info"],
+        help="Console/notification level (or EBOOK_LOG_LEVEL)",
+    )
     parser.add_argument(
         "--metadata-source",
         default=None,
@@ -2436,7 +2496,12 @@ def main() -> int:
         print(f"ERROR: library_root does not exist: {library_root}", file=sys.stderr)
         return 2
 
-    config = build_config(args)
+    try:
+        config = build_config(args)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    set_active_log_level(config.log_level)
 
     if args.watch_directory:
         watch_dir = Path(args.watch_directory)

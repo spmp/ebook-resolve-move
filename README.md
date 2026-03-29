@@ -117,6 +117,7 @@ Options:
 - `--settle-seconds SETTLE_SECONDS`
 - `--api-base API_BASE`
 - `--dry-run`, `--no-dry-run`
+- `--log-level {DEBUG,WARN,INFO}`
 - `--metadata-source METADATA_SOURCE`
 - `--min-score MIN_SCORE`
 - `--min-margin MIN_MARGIN`
@@ -147,6 +148,7 @@ Metadata source selection:
 - `EBOOK_LIBRARY_ROOT` (required unless `--library-root` is set)
 - `EBOOK_API_BASE`
 - `EBOOK_DRY_RUN`
+- `EBOOK_LOG_LEVEL`
 - `EBOOK_METADATA_SOURCES`
 - `EBOOK_MIN_SCORE`
 - `EBOOK_MIN_MARGIN`
@@ -169,6 +171,12 @@ File collision behavior:
 
 - default (`--no-overwrite-existing`): keep existing file and create a numbered suffix via `unique_path` (for example `(2)`, `(3)`, ...)
 - with `--overwrite-existing` or `EBOOK_OVERWRITE_EXISTING=true`: replace existing destination file
+
+Log/notification behavior:
+
+- `DEBUG` (default): full console logs and all `OPENBOOKS_NOTIFY` events (success + error)
+- `WARN`: full console logs, suppress success `OPENBOOKS_NOTIFY` info events, keep warning/error notifications
+- `INFO`: minimal console logs (move or not-moved decisions) and only error `OPENBOOKS_NOTIFY` events for not-moved files
 
 ### Supported formats and fields
 

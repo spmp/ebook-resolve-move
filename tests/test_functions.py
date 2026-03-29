@@ -302,6 +302,7 @@ class FunctionTests(unittest.TestCase):
         args = Namespace(
             api_base=None,
             dry_run=None,
+            log_level=None,
             metadata_source=None,
             min_score=None,
             min_margin=None,
@@ -326,6 +327,34 @@ class FunctionTests(unittest.TestCase):
         self.assertEqual(erm.parse_metadata_sources("hardcover"), ["hardcover"])
         self.assertEqual(erm.parse_metadata_sources("goodreads,hardcover"), ["goodreads", "hardcover"])
         self.assertEqual(erm.parse_metadata_sources("harcover"), ["hardcover"])
+
+    def test_parse_log_level(self):
+        self.assertEqual(erm.parse_log_level("debug"), "DEBUG")
+        self.assertEqual(erm.parse_log_level("warn"), "WARN")
+        self.assertEqual(erm.parse_log_level("INFO"), "INFO")
+
+    def test_notification_emission_by_log_level(self):
+        erm.set_active_log_level("DEBUG")
+        self.assertTrue(erm.should_emit_notification("info"))
+        self.assertTrue(erm.should_emit_notification("warning"))
+        self.assertTrue(erm.should_emit_notification("error"))
+
+        erm.set_active_log_level("WARN")
+        self.assertFalse(erm.should_emit_notification("info"))
+        self.assertTrue(erm.should_emit_notification("warning"))
+        self.assertTrue(erm.should_emit_notification("error"))
+
+        erm.set_active_log_level("INFO")
+        self.assertFalse(erm.should_emit_notification("info"))
+        self.assertFalse(erm.should_emit_notification("warning"))
+        self.assertTrue(erm.should_emit_notification("error"))
+
+    def test_console_emission_by_log_level(self):
+        erm.set_active_log_level("INFO")
+        self.assertTrue(erm.should_emit_console_line("MOVED             : /a -> /b"))
+        self.assertTrue(erm.should_emit_console_line("DECISION          : no non-ambiguous strong match; leaving untouched"))
+        self.assertTrue(erm.should_emit_console_line("OPENBOOKS_NOTIFY {\"level\":\"error\"}"))
+        self.assertFalse(erm.should_emit_console_line("SEARCH_QUERY      : 'abc'"))
 
 
 if __name__ == "__main__":
