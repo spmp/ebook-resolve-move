@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -134,6 +135,16 @@ TEMP_SUFFIXES = (
 # --------------------------------------------------
 def log(msg: str) -> None:
     print(msg, flush=True)
+
+
+def notify_openbooks(level: str, title: str, detail: Optional[str] = None) -> None:
+    payload: Dict[str, str] = {
+        "level": level,
+        "title": title,
+    }
+    if detail:
+        payload["detail"] = detail
+    log(f"OPENBOOKS_NOTIFY {json.dumps(payload, ensure_ascii=True)}")
 
 
 def norm_text(value: Optional[str]) -> str:
@@ -2110,6 +2121,11 @@ def process_file(
         log("DECISION          : no strong match; moving using embedded title/author")
     else:
         log("DECISION          : no non-ambiguous strong match; leaving untouched")
+        notify_openbooks(
+            "error",
+            "Error",
+            f"{file_path.name} could not be processed due to lack of metadata. Please manually import.",
+        )
         return 0
 
     final_title = embedded.title or filename_meta.title or (resolved.title if resolved else None)
@@ -2117,6 +2133,11 @@ def process_file(
 
     if not final_title or not final_author:
         log("DECISION          : insufficient final metadata; leaving untouched")
+        notify_openbooks(
+            "error",
+            "Error",
+            f"{file_path.name} could not be processed due to lack of metadata. Please manually import.",
+        )
         return 0
 
     writes: List[str] = []
@@ -2139,6 +2160,12 @@ def process_file(
             dest.unlink()
         shutil.move(str(file_path), str(dest))
         log(f"MOVED             : {file_path} -> {dest}")
+        relative_dest = str(dest)
+        try:
+            relative_dest = str(dest.relative_to(library_root))
+        except ValueError:
+            pass
+        notify_openbooks("info", "Success", f"Ebook imported to {relative_dest}")
 
     if config.kavita_scan:
         if not config.kavita_api_key:

@@ -11,6 +11,11 @@ This project is intentionally conservative where source metadata is weak, and in
 
 If you hit an edge case, please open an issue or PR with a failing test fixture. That is the fastest way to improve behavior without overfitting.
 
+Hook notification lines:
+
+- On successful import, the script emits an `OPENBOOKS_NOTIFY` info event with detail `Ebook imported to <Author>/<Title>/<filename>`.
+- On no-move due to insufficient metadata, the script emits an `OPENBOOKS_NOTIFY` error event with detail `<filename> could not be processed due to lack of metadata. Please manually import.`
+
 For contribution workflow details, see `CONTRIBUTING.md`.
 
 For agent-focused architecture and coding standards, see `AGENTS.md`.

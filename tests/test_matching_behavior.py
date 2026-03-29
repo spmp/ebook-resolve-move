@@ -323,6 +323,7 @@ class MatchingBehaviorTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(moved_count, 0)
         self.assertTrue(any("leaving untouched" in line for line in logs))
+        self.assertTrue(any("OPENBOOKS_NOTIFY" in line and '"level": "error"' in line for line in logs))
 
     def test_process_no_metadata_accepts_when_title_and_author_match(self):
         works = {5002: build_payload("Mistborn", "Brandon Sanderson")}
@@ -333,6 +334,7 @@ class MatchingBehaviorTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(moved_count, 1)
         self.assertTrue(any("MOVED" in line for line in logs))
+        self.assertTrue(any("OPENBOOKS_NOTIFY" in line and '"level": "info"' in line for line in logs))
 
     def test_process_collision_creates_suffix_when_overwrite_disabled(self):
         class FakeClient:
