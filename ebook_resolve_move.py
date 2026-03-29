@@ -106,6 +106,18 @@ ODF_NS = {
     "dc": "http://purl.org/dc/elements/1.1/",
 }
 
+RDF_NS = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+XMPMETA_NS = "adobe:ns:meta/"
+DC_NS = "http://purl.org/dc/elements/1.1/"
+PRISM_NS = "http://prismstandard.org/namespaces/basic/2.0/"
+PDFX_NS = "http://ns.adobe.com/pdfx/1.3/"
+
+ET.register_namespace("x", XMPMETA_NS)
+ET.register_namespace("rdf", RDF_NS)
+ET.register_namespace("dc", DC_NS)
+ET.register_namespace("prism", PRISM_NS)
+ET.register_namespace("pdfx", PDFX_NS)
+
 TEMP_SUFFIXES = (
     ".part",
     ".tmp",
@@ -298,6 +310,9 @@ class EmbeddedMetadata:
     description: Optional[str] = None
     published_date: Optional[str] = None
     subjects: Optional[List[str]] = None
+    metadata_provider: Optional[str] = None
+    metadata_provider_id: Optional[str] = None
+    metadata_provider_endpoint: Optional[str] = None
     source: str = "none"
 
 
@@ -320,6 +335,9 @@ class WorkMetadata:
     description: Optional[str] = None
     published_date: Optional[str] = None
     subjects: Optional[List[str]] = None
+    metadata_provider: Optional[str] = None
+    metadata_provider_id: Optional[str] = None
+    metadata_provider_endpoint: Optional[str] = None
 
 
 @dataclass
@@ -435,6 +453,21 @@ def read_opf_metadata_xml(opf_xml: bytes, source: str) -> EmbeddedMetadata:
         if value:
             subjects.append(value)
 
+    provider = None
+    provider_id = None
+    provider_endpoint = None
+    for meta in opf_root.findall(".//opf:metadata/opf:meta", EPUB_NS):
+        name = (meta.attrib.get("name") or "").strip().lower()
+        content = (meta.attrib.get("content") or "").strip()
+        if not content:
+            continue
+        if name == "ebook_resolve_provider":
+            provider = content
+        elif name == "ebook_resolve_work_id":
+            provider_id = content
+        elif name == "ebook_resolve_provider_endpoint":
+            provider_endpoint = content
+
     return EmbeddedMetadata(
         title=text(".//opf:metadata/dc:title"),
         author=text(".//opf:metadata/dc:creator"),
@@ -444,6 +477,9 @@ def read_opf_metadata_xml(opf_xml: bytes, source: str) -> EmbeddedMetadata:
         description=text(".//opf:metadata/dc:description"),
         published_date=text(".//opf:metadata/dc:date"),
         subjects=subjects or None,
+        metadata_provider=provider,
+        metadata_provider_id=provider_id,
+        metadata_provider_endpoint=provider_endpoint,
         source=source,
     )
 
@@ -491,14 +527,88 @@ def read_pdf_metadata(path: Path) -> EmbeddedMetadata:
                     return text
         return None
 
+    def first_from_xmp(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            text = value.strip()
+            return text or None
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                out = first_from_xmp(item)
+                if out:
+                    return out
+            return None
+        if isinstance(value, dict):
+            for item in value.values():
+                out = first_from_xmp(item)
+                if out:
+                    return out
+            return None
+        text = str(value).strip()
+        return text or None
+
+    xmp_title = None
+    xmp_author = None
+    xmp_publisher = None
+    xmp_description = None
+    xmp_language = None
+    xmp_date = None
+    xmp_subjects: List[str] = []
+    xmp_isbn = None
+    xmp_source = None
+
+    xmp = reader.xmp_metadata
+    if xmp is not None:
+        xmp_title = first_from_xmp(getattr(xmp, "dc_title", None))
+        xmp_author = first_from_xmp(getattr(xmp, "dc_creator", None))
+        xmp_publisher = first_from_xmp(getattr(xmp, "dc_publisher", None))
+        xmp_description = first_from_xmp(getattr(xmp, "dc_description", None))
+        xmp_language = first_from_xmp(getattr(xmp, "dc_language", None))
+        xmp_date = first_from_xmp(getattr(xmp, "dc_date", None))
+
+        dc_subject = getattr(xmp, "dc_subject", None)
+        if isinstance(dc_subject, (list, tuple)):
+            for item in dc_subject:
+                text = first_from_xmp(item)
+                if text:
+                    xmp_subjects.append(text)
+
+        dc_identifier = getattr(xmp, "dc_identifier", None)
+        if isinstance(dc_identifier, (list, tuple)):
+            for item in dc_identifier:
+                text = first_from_xmp(item)
+                if text:
+                    cleaned = re.sub(r"[-\s]", "", text)
+                    if re.fullmatch(r"(97[89])?\d{9}[\dXx]", cleaned):
+                        xmp_isbn = text
+                        break
+        xmp_source = first_from_xmp(getattr(xmp, "dc_source", None))
+
+    source_provider = get("/EBX_MetadataProvider")
+    source_provider_id = get("/EBX_WorkId")
+    if (not source_provider or not source_provider_id) and xmp_source and ":" in xmp_source:
+        left, right = xmp_source.split(":", 1)
+        if not source_provider:
+            source_provider = left.strip() or None
+        if not source_provider_id:
+            source_provider_id = right.strip() or None
+
+    info_subjects = [part.strip() for part in (get("/Keywords") or "").split(",") if part.strip()]
+    merged_subjects = list(dict.fromkeys(info_subjects + xmp_subjects))
+
     return EmbeddedMetadata(
-        title=get("/Title"),
-        author=get("/Author"),
-        publisher=get("/Producer"),
-        language=None,
-        isbn=None,
-        description=get("/Subject"),
-        subjects=[part.strip() for part in (get("/Keywords") or "").split(",") if part.strip()] or None,
+        title=get("/Title") or xmp_title,
+        author=get("/Author") or xmp_author,
+        publisher=get("/Producer") or xmp_publisher,
+        language=xmp_language,
+        isbn=xmp_isbn,
+        description=get("/Subject") or xmp_description,
+        published_date=xmp_date,
+        subjects=merged_subjects or None,
+        metadata_provider=source_provider,
+        metadata_provider_id=source_provider_id,
+        metadata_provider_endpoint=get("/EBX_MetadataProviderEndpoint"),
         source="pdf",
     )
 
@@ -792,6 +902,12 @@ def write_epub_metadata_non_destructive(
     if not existing.subjects and resolved.subjects:
         for subject in resolved.subjects:
             planned.append(("subject", subject))
+    if not existing.metadata_provider and resolved.metadata_provider:
+        planned.append(("ebook_resolve_provider", resolved.metadata_provider))
+    if not existing.metadata_provider_id and resolved.metadata_provider_id:
+        planned.append(("ebook_resolve_work_id", resolved.metadata_provider_id))
+    if not existing.metadata_provider_endpoint and resolved.metadata_provider_endpoint:
+        planned.append(("ebook_resolve_provider_endpoint", resolved.metadata_provider_endpoint))
 
     if not planned:
         return []
@@ -825,6 +941,19 @@ def write_epub_metadata_non_destructive(
             node.text = value
             metadata_el.append(node)
             wrote.append(f"WROTE {local_name}={value}")
+
+        def append_meta_name(name: str, value: str) -> None:
+            if not value:
+                return
+            for meta in metadata_el.findall("./opf:meta", EPUB_NS):
+                if (meta.attrib.get("name") or "").strip().lower() == name.lower():
+                    if (meta.attrib.get("content") or "").strip():
+                        return
+            node = ET.Element(f"{{{EPUB_NS['opf']}}}meta")
+            node.set("name", name)
+            node.set("content", value)
+            metadata_el.append(node)
+            wrote.append(f"WROTE {name}={value}")
 
         if not existing.title and resolved.title:
             append_dc("title", resolved.title, "./dc:title")
@@ -860,6 +989,12 @@ def write_epub_metadata_non_destructive(
                     node.text = value
                     metadata_el.append(node)
                     wrote.append(f"WROTE subject={value}")
+        if not existing.metadata_provider and resolved.metadata_provider:
+            append_meta_name("ebook_resolve_provider", resolved.metadata_provider)
+        if not existing.metadata_provider_id and resolved.metadata_provider_id:
+            append_meta_name("ebook_resolve_work_id", resolved.metadata_provider_id)
+        if not existing.metadata_provider_endpoint and resolved.metadata_provider_endpoint:
+            append_meta_name("ebook_resolve_provider_endpoint", resolved.metadata_provider_endpoint)
 
         new_opf = ET.tostring(opf_root, encoding="utf-8", xml_declaration=True)
 
@@ -881,27 +1016,157 @@ def write_epub_metadata_non_destructive(
     return wrote
 
 
+def split_author_list(author_value: str) -> List[str]:
+    text = (author_value or "").strip()
+    if not text:
+        return []
+    parts = re.split(r"\s*(?:&|,|\band\b)\s*", text)
+    cleaned = [p.strip() for p in parts if p.strip()]
+    return cleaned or [text]
+
+
+def _get_or_create_rdf_description(root: ET.Element) -> ET.Element:
+    rdf = root.find(f"./{{{RDF_NS}}}RDF")
+    if rdf is None:
+        rdf = ET.SubElement(root, f"{{{RDF_NS}}}RDF")
+    description = rdf.find(f"./{{{RDF_NS}}}Description")
+    if description is None:
+        description = ET.SubElement(rdf, f"{{{RDF_NS}}}Description")
+        description.attrib[f"{{{RDF_NS}}}about"] = ""
+    return description
+
+
+def _set_dc_container(description: ET.Element, key: str, container: str, values: List[str]) -> None:
+    element = description.find(f"./{{{DC_NS}}}{key}")
+    if element is None:
+        element = ET.SubElement(description, f"{{{DC_NS}}}{key}")
+    for child in list(element):
+        element.remove(child)
+    container_el = ET.SubElement(element, f"{{{RDF_NS}}}{container}")
+    for value in values:
+        li = ET.SubElement(container_el, f"{{{RDF_NS}}}li")
+        li.text = value
+
+
+def _set_dc_alt(description: ET.Element, key: str, value: str) -> None:
+    element = description.find(f"./{{{DC_NS}}}{key}")
+    if element is None:
+        element = ET.SubElement(description, f"{{{DC_NS}}}{key}")
+    for child in list(element):
+        element.remove(child)
+    alt = ET.SubElement(element, f"{{{RDF_NS}}}Alt")
+    li = ET.SubElement(alt, f"{{{RDF_NS}}}li")
+    li.attrib["{http://www.w3.org/XML/1998/namespace}lang"] = "x-default"
+    li.text = value
+
+
+def _set_simple_ns_value(description: ET.Element, namespace: str, key: str, value: str) -> None:
+    element = description.find(f"./{{{namespace}}}{key}")
+    if element is None:
+        element = ET.SubElement(description, f"{{{namespace}}}{key}")
+    element.text = value
+
+
+def merge_pdf_xmp_non_destructive(existing_xmp: Optional[bytes], updates: Dict[str, Any]) -> bytes:
+    if existing_xmp:
+        root = ET.fromstring(existing_xmp)
+    else:
+        root = ET.Element(f"{{{XMPMETA_NS}}}xmpmeta")
+
+    description = _get_or_create_rdf_description(root)
+
+    if updates.get("dc_title"):
+        _set_dc_alt(description, "title", updates["dc_title"])
+    if updates.get("dc_description"):
+        _set_dc_alt(description, "description", updates["dc_description"])
+    if updates.get("dc_creator"):
+        _set_dc_container(description, "creator", "Seq", updates["dc_creator"])
+    if updates.get("dc_subject"):
+        _set_dc_container(description, "subject", "Bag", updates["dc_subject"])
+    if updates.get("dc_publisher"):
+        _set_dc_container(description, "publisher", "Bag", updates["dc_publisher"])
+    if updates.get("dc_date"):
+        _set_dc_container(description, "date", "Seq", updates["dc_date"])
+    if updates.get("dc_language"):
+        _set_dc_container(description, "language", "Bag", updates["dc_language"])
+    if updates.get("dc_source"):
+        _set_simple_ns_value(description, DC_NS, "source", updates["dc_source"])
+    if updates.get("prism_isbn"):
+        _set_simple_ns_value(description, PRISM_NS, "isbn", updates["prism_isbn"])
+    if updates.get("pdfx_isbn"):
+        _set_simple_ns_value(description, PDFX_NS, "Isbn", updates["pdfx_isbn"])
+
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
 def write_pdf_metadata_non_destructive(
     path: Path, existing: EmbeddedMetadata, resolved: WorkMetadata, dry_run: bool
 ) -> List[str]:
     updates: Dict[str, str] = {}
+    xmp_updates: Dict[str, Any] = {}
 
     if not existing.title and resolved.title:
         updates["/Title"] = resolved.title
+        xmp_updates["dc_title"] = resolved.title
     if not existing.author and resolved.author:
         updates["/Author"] = resolved.author
+        xmp_updates["dc_creator"] = split_author_list(resolved.author)
     if not existing.description and resolved.description:
         updates["/Subject"] = resolved.description
+        xmp_updates["dc_description"] = resolved.description
     if not existing.subjects and resolved.subjects:
         joined_subjects = ", ".join(s.strip() for s in resolved.subjects if s and s.strip())
         if joined_subjects:
             updates["/Keywords"] = joined_subjects
+            xmp_updates["dc_subject"] = [s.strip() for s in resolved.subjects if s and s.strip()]
+    if not existing.publisher and resolved.publisher:
+        xmp_updates["dc_publisher"] = [resolved.publisher]
+    if not existing.language and resolved.language:
+        xmp_updates["dc_language"] = [resolved.language]
+    if not existing.published_date and resolved.published_date:
+        xmp_updates["dc_date"] = [resolved.published_date]
+    if not existing.isbn and resolved.isbn13:
+        xmp_updates["prism_isbn"] = resolved.isbn13
+        xmp_updates["pdfx_isbn"] = resolved.isbn13
+    if not existing.metadata_provider and resolved.metadata_provider:
+        updates["/EBX_MetadataProvider"] = resolved.metadata_provider
+    if not existing.metadata_provider_id and resolved.metadata_provider_id:
+        updates["/EBX_WorkId"] = resolved.metadata_provider_id
+    if not existing.metadata_provider_endpoint and resolved.metadata_provider_endpoint:
+        updates["/EBX_MetadataProviderEndpoint"] = resolved.metadata_provider_endpoint
+    if (
+        not existing.metadata_provider
+        and resolved.metadata_provider
+        and resolved.metadata_provider_id
+    ):
+        xmp_updates["dc_source"] = f"{resolved.metadata_provider}:{resolved.metadata_provider_id}"
 
-    if not updates:
+    if not updates and not xmp_updates:
         return []
 
     if dry_run:
-        return [f"WOULD_WRITE_PDF {k}={v}" for k, v in updates.items()]
+        lines = [f"WOULD_WRITE_PDF {k}={v}" for k, v in updates.items()]
+        if "dc_title" in xmp_updates:
+            lines.append(f"WOULD_WRITE_PDF_XMP dc:title={xmp_updates['dc_title']}")
+        if "dc_creator" in xmp_updates:
+            lines.append(f"WOULD_WRITE_PDF_XMP dc:creator={xmp_updates['dc_creator']}")
+        if "dc_description" in xmp_updates:
+            lines.append(f"WOULD_WRITE_PDF_XMP dc:description={xmp_updates['dc_description']}")
+        if "dc_subject" in xmp_updates:
+            lines.append(f"WOULD_WRITE_PDF_XMP dc:subject={xmp_updates['dc_subject']}")
+        if "dc_publisher" in xmp_updates:
+            lines.append(f"WOULD_WRITE_PDF_XMP dc:publisher={xmp_updates['dc_publisher']}")
+        if "dc_date" in xmp_updates:
+            lines.append(f"WOULD_WRITE_PDF_XMP dc:date={xmp_updates['dc_date']}")
+        if "dc_language" in xmp_updates:
+            lines.append(f"WOULD_WRITE_PDF_XMP dc:language={xmp_updates['dc_language']}")
+        if "prism_isbn" in xmp_updates:
+            lines.append(f"WOULD_WRITE_PDF_XMP prism:isbn={xmp_updates['prism_isbn']}")
+        if "pdfx_isbn" in xmp_updates:
+            lines.append(f"WOULD_WRITE_PDF_XMP pdfx:Isbn={xmp_updates['pdfx_isbn']}")
+        if "dc_source" in xmp_updates:
+            lines.append(f"WOULD_WRITE_PDF_XMP dc:source={xmp_updates['dc_source']}")
+        return lines
 
     reader = PdfReader(str(path))
     writer = PdfWriter()
@@ -920,6 +1185,13 @@ def write_pdf_metadata_non_destructive(
 
     writer.add_metadata(new_meta)
 
+    existing_xmp_bytes: Optional[bytes] = None
+    xmp = reader.xmp_metadata
+    if xmp is not None:
+        existing_xmp_bytes = xmp.stream.get_data()
+    if xmp_updates:
+        writer.xmp_metadata = merge_pdf_xmp_non_destructive(existing_xmp_bytes, xmp_updates)
+
     tmp_fd, tmp_name = tempfile.mkstemp(suffix=path.suffix)
     Path(tmp_name).unlink(missing_ok=True)
     tmp_path = Path(tmp_name)
@@ -931,7 +1203,10 @@ def write_pdf_metadata_non_destructive(
     finally:
         tmp_path.unlink(missing_ok=True)
 
-    return [f"WROTE {k}={v}" for k, v in updates.items()]
+    lines = [f"WROTE {k}={v}" for k, v in updates.items()]
+    if xmp_updates:
+        lines.append("WROTE XMP=updated")
+    return lines
 
 
 def write_zip_entry(path: Path, entry_name: str, new_data: bytes) -> None:
@@ -1461,6 +1736,8 @@ def parse_work_metadata(work_id: int, payload: Dict[str, Any]) -> WorkMetadata:
         description=description,
         published_date=published_date,
         subjects=subjects or None,
+        metadata_provider="Hardcover",
+        metadata_provider_id=str(work_id),
     )
 
 
@@ -1756,6 +2033,8 @@ def process_file(
         resolved: Optional[WorkMetadata] = None
         if chosen:
             resolved = chosen.work
+            if not resolved.metadata_provider_endpoint:
+                resolved.metadata_provider_endpoint = config.api_base
             log(f"CHOSEN_WORK_ID     : {resolved.work_id}")
             log(f"RESOLVED_TITLE     : {resolved.title!r}")
             log(f"RESOLVED_AUTHOR    : {resolved.author!r}")
@@ -1764,6 +2043,8 @@ def process_file(
             log(f"RESOLVED_LANGUAGE  : {resolved.language!r}")
             log(f"RESOLVED_DATE      : {resolved.published_date!r}")
             log(f"RESOLVED_SUBJECTS  : {resolved.subjects!r}")
+            log(f"RESOLVED_PROVIDER  : {resolved.metadata_provider!r}")
+            log(f"RESOLVED_PROVIDER_ID: {resolved.metadata_provider_id!r}")
         elif embedded.title and embedded.author:
             log("DECISION          : no strong match; moving using embedded title/author")
         else:

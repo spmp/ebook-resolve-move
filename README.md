@@ -138,12 +138,15 @@ Current embedded metadata support is intentionally explicit:
 - `EPUB` (`.epub`)
   - reads: `dc:title`, `dc:creator`, `dc:identifier` (ISBN-like), `dc:publisher`, `dc:language`, `dc:description`, `dc:date`, `dc:subject`
   - writes (missing-only): `dc:title`, `dc:creator`, `dc:identifier`, `dc:publisher`, `dc:language`, `dc:description`, `dc:date`, `dc:subject`
+  - writes provider provenance (missing-only): `meta[name=ebook_resolve_provider]`, `meta[name=ebook_resolve_work_id]`, `meta[name=ebook_resolve_provider_endpoint]`
 - `KEPUB` (`.kepub`, `.kepub.epub`)
   - treated as EPUB container
   - reads/writes same fields as EPUB
 - `PDF` (`.pdf`)
   - reads: `/Title`, `/Author`, `/Producer` (publisher-ish), `/Subject`, `/Keywords`
-  - writes (missing-only): `/Title`, `/Author`, `/Subject`, `/Keywords`
+  - reads (also from XMP when present): `dc:title`, `dc:creator`, `dc:description`, `dc:subject`, `dc:publisher`, `dc:date`, `dc:language`, identifiers
+  - writes (missing-only): `/Title`, `/Author`, `/Subject`, `/Keywords` and XMP fields `dc:title`, `dc:creator`, `dc:description`, `dc:subject`, `dc:publisher`, `dc:date`, `dc:language`, `prism:isbn`, `pdfx:Isbn`
+  - writes provider provenance (missing-only): `/EBX_MetadataProvider`, `/EBX_WorkId`, `/EBX_MetadataProviderEndpoint`, and `dc:source`
 - `DOCX` (`.docx`)
   - reads: title, author, description, created date, keywords
   - writes (missing-only): title, author, description, created date, keywords

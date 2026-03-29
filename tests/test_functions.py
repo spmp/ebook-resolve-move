@@ -81,6 +81,8 @@ class FunctionTests(unittest.TestCase):
         self.assertEqual(work.description, "A detailed description.")
         self.assertEqual(work.published_date, "2020-01-02")
         self.assertEqual(work.subjects, ["Fiction", "Adventure"])
+        self.assertEqual(work.metadata_provider, "Hardcover")
+        self.assertEqual(work.metadata_provider_id, "42")
 
     def test_write_epub_metadata_dry_run_includes_rich_fields(self):
         existing = erm.EmbeddedMetadata(source="epub")
@@ -94,6 +96,9 @@ class FunctionTests(unittest.TestCase):
             description="Description",
             published_date="2020-01-02",
             subjects=["Tag One", "Tag Two"],
+            metadata_provider="Hardcover",
+            metadata_provider_id="1",
+            metadata_provider_endpoint="https://hardcover.bookinfo.pro",
         )
 
         writes = erm.write_epub_metadata_non_destructive(
@@ -112,6 +117,9 @@ class FunctionTests(unittest.TestCase):
         self.assertIn("WOULD_WRITE_EPUB date=2020-01-02", writes)
         self.assertIn("WOULD_WRITE_EPUB subject=Tag One", writes)
         self.assertIn("WOULD_WRITE_EPUB subject=Tag Two", writes)
+        self.assertIn("WOULD_WRITE_EPUB ebook_resolve_provider=Hardcover", writes)
+        self.assertIn("WOULD_WRITE_EPUB ebook_resolve_work_id=1", writes)
+        self.assertIn("WOULD_WRITE_EPUB ebook_resolve_provider_endpoint=https://hardcover.bookinfo.pro", writes)
 
     def test_write_pdf_metadata_dry_run_includes_rich_fields(self):
         existing = erm.EmbeddedMetadata(source="pdf")
@@ -120,7 +128,14 @@ class FunctionTests(unittest.TestCase):
             title="Book Title",
             author="Author Name",
             description="Description",
+            publisher="Publisher",
+            language="en",
+            published_date="2021-01-01",
+            isbn13="9781234567890",
             subjects=["Mindfulness", "Meditation"],
+            metadata_provider="Hardcover",
+            metadata_provider_id="2",
+            metadata_provider_endpoint="https://hardcover.bookinfo.pro",
         )
 
         writes = erm.write_pdf_metadata_non_destructive(
@@ -134,6 +149,43 @@ class FunctionTests(unittest.TestCase):
         self.assertIn("WOULD_WRITE_PDF /Author=Author Name", writes)
         self.assertIn("WOULD_WRITE_PDF /Subject=Description", writes)
         self.assertIn("WOULD_WRITE_PDF /Keywords=Mindfulness, Meditation", writes)
+        self.assertIn("WOULD_WRITE_PDF_XMP dc:title=Book Title", writes)
+        self.assertIn("WOULD_WRITE_PDF_XMP dc:creator=['Author Name']", writes)
+        self.assertIn("WOULD_WRITE_PDF_XMP dc:description=Description", writes)
+        self.assertIn("WOULD_WRITE_PDF_XMP dc:subject=['Mindfulness', 'Meditation']", writes)
+        self.assertIn("WOULD_WRITE_PDF_XMP dc:publisher=['Publisher']", writes)
+        self.assertIn("WOULD_WRITE_PDF_XMP dc:date=['2021-01-01']", writes)
+        self.assertIn("WOULD_WRITE_PDF_XMP dc:language=['en']", writes)
+        self.assertIn("WOULD_WRITE_PDF_XMP prism:isbn=9781234567890", writes)
+        self.assertIn("WOULD_WRITE_PDF_XMP pdfx:Isbn=9781234567890", writes)
+        self.assertIn("WOULD_WRITE_PDF /EBX_MetadataProvider=Hardcover", writes)
+        self.assertIn("WOULD_WRITE_PDF /EBX_WorkId=2", writes)
+        self.assertIn("WOULD_WRITE_PDF /EBX_MetadataProviderEndpoint=https://hardcover.bookinfo.pro", writes)
+        self.assertIn("WOULD_WRITE_PDF_XMP dc:source=Hardcover:2", writes)
+
+    def test_merge_pdf_xmp_non_destructive_writes_expected_tags(self):
+        xmp_bytes = erm.merge_pdf_xmp_non_destructive(
+            None,
+            {
+                "dc_title": "Book Title",
+                "dc_creator": ["A", "B"],
+                "dc_description": "Desc",
+                "dc_subject": ["S1", "S2"],
+                "dc_publisher": ["Pub"],
+                "dc_date": ["2022-01-01"],
+                "dc_language": ["en"],
+                "prism_isbn": "9781234567890",
+                "pdfx_isbn": "9781234567890",
+            },
+        )
+        xml = xmp_bytes.decode("utf-8")
+        self.assertIn("Book Title", xml)
+        self.assertIn("Desc", xml)
+        self.assertIn("S1", xml)
+        self.assertIn("S2", xml)
+        self.assertIn("Pub", xml)
+        self.assertIn("2022-01-01", xml)
+        self.assertIn("9781234567890", xml)
 
     def test_write_docx_metadata_dry_run(self):
         existing = erm.EmbeddedMetadata(source="docx")
