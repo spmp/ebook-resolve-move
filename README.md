@@ -1,11 +1,15 @@
 # ebook-resolve-move
 
-A safety-first ebook ingestion script for:
+A safety-first ebook ingestion script which takes an ebook from a staging area, enriches it's metadata, and moves it to your book library in a canonical naming convention.
+This project is designed to be used standalone and with the likes of [openbooks](https://github.com/spmp/openbooks).
 
-- metadata lookup using `hardcover.bookinfo.pro`
+Features:
+- metadata lookup using `hardcover.bookinfo.pro` (Harcover) and `api.bookinfo.pro` (Goodreads) (see [reading-glasses](https://github.com/blampe/rreading-glasses))
 - non-destructive metadata enrichment (add missing fields, never overwrite existing fields)
+- Intelligent metadata resolution from the given metadata sources
 - move files into an `Author/Title/Title - Author.ext` structure
 - optional post-move sync triggers for Kavita and Readarr
+- Files are not moved if metadata cannot be verified
 
 This project is intentionally conservative where source metadata is weak, and intentionally practical where source metadata is already strong enough to move safely.
 
@@ -35,7 +39,11 @@ GPLv3 (`LICENSE`).
 
 ## Quick Start
 
+### Install and run from this git repo
+
 ```bash
+git clone https://github.com/spmp/ebook-resolve-move.git
+cd ebook-resolve-move
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
@@ -44,11 +52,10 @@ pip install -r requirements.txt
 One-shot minimal run:
 
 ```bash
-EBOOK_LIBRARY_ROOT=/path/to/library \
-python3 ebook_resolve_move.py /path/to/incoming/book.epub
+./ebook_resolve_move.py --library-root /path/to/library /path/to/incoming/book.epub
 ```
 
-## Installation (pip)
+### Installation and run via pip
 
 Install from local checkout:
 
@@ -59,49 +66,41 @@ python3 -m pip install .
 Install directly from GitHub:
 
 ```bash
-python3 -m pip install "git+https://github.com/<owner>/<repo>.git"
+python3 -m pip install "git+https://github.com/spmp/ebook-resolve-move.git"
 ```
 
-This installs the command:
+One-shot minimal run:
 
 ```bash
-ebook-resolve-move
+ebook-resolve-move --library-root /path/to/library /path/to/incoming/book.epub
 ```
 
-You can still run the script directly as before:
+### Run modes
+### One-shot
+In this mode this script processess just the one file given as the final argument.
+See _one-shot minimal run_ commands above.
+
+### Watch mode
+In _watch mode_ this script monitors a directory for new files to proces.
+The `--recursive` flag watches all directories below the given watch directory,
+and `--initial-scan` includes files already in the direcotry, not just new files.
 
 ```bash
-python3 ebook_resolve_move.py /path/to/incoming/book.epub
-```
-
-Watch mode:
-
-```bash
-python3 ebook_resolve_move.py \
+ebook-resolve-move \
   --watch-directory /path/to/incoming \
   --library-root /path/to/library \
-  --recursive
+  --recursive --initial-scan
 ```
 
-## Virtualenv Portability
+## Configuration
+Configuration precedence is always:
 
-The script keeps a portable shebang (`#!/usr/bin/env python3`) and then tries to re-exec into local venv Python before importing dependencies.
+1. CLI switch
+2. Environment variable
+3. built-in default
 
-Lookup order for interpreter re-exec:
-
-1. `EBOOK_PYTHON`
-2. `EBOOK_VENV/bin/python`
-3. `<script_dir>/.venv/bin/python`
-4. `<cwd>/.venv/bin/python`
-5. parent directories' `.venv/bin/python`
-
-Overrides:
-
-- `EBOOK_PYTHON`: explicit Python path
-- `EBOOK_VENV`: explicit venv path
-- `EBOOK_SKIP_VENV_REEXEC=1`: disable re-exec
-
-## CLI Options (Complete)
+### CLI Options
+`ebook-resolve-move [flags] file`
 
 Positional:
 
@@ -131,19 +130,13 @@ Options:
 - `--readarr-api-key READARR_API_KEY`
 - `--readarr-command-json READARR_COMMAND_JSON`
 
-Configuration precedence is always:
-
-1. CLI switch
-2. Environment variable
-3. built-in default
-
 Metadata source selection:
 
 - default: `all` -> `hardcover,goodreads`
 - single source: `hardcover` or `goodreads`
 - custom order: comma-separated list, e.g. `goodreads,hardcover`
 
-## Environment Variables
+### Environment Variables
 
 - `EBOOK_LIBRARY_ROOT` (required unless `--library-root` is set)
 - `EBOOK_API_BASE`
@@ -162,6 +155,44 @@ Metadata source selection:
 - `EBOOK_READARR_API_KEY`
 - `EBOOK_READARR_COMMAND_JSON`
 - `EBOOK_SETTLE_SECONDS`
+
+
+### Kavita
+
+Enable with:
+
+- `--kavita-scan` or `EBOOK_KAVITA_SCAN=true`
+- set `--kavita-api-key` / `EBOOK_KAVITA_API_KEY`
+- optional `--kavita-library-id` / `EBOOK_KAVITA_LIBRARY_ID`
+
+### Bookshelf/Readarr/Forks
+
+Enable with:
+
+- `--readarr-scan` or `EBOOK_READARR_SCAN=true`
+- set `--readarr-api-key` / `EBOOK_READARR_API_KEY`
+
+Command payload examples (`EBOOK_READARR_COMMAND_JSON`):
+
+- default full folder rescan:
+
+```json
+{"name":"RescanFolders"}
+```
+
+- custom payload example (depends on your Readarr version and enabled commands):
+
+```json
+{"name":"RescanFolders","filterKey":"all"}
+```
+
+Tip: command names/fields can vary by version. Check your instance command schema/endpoints before changing payloads.
+
+Readarr rename safety recommendation:
+
+- In Readarr Media Management, disable broad auto-renaming/organizing for library scans if this script is your canonical organizer.
+- Prefer settings that only rename/manage content Readarr downloaded itself.
+- Option names vary by version; verify with a dry-run workflow in your environment.
 
 ## Metadata Behavior (Important)
 
@@ -240,45 +271,6 @@ Why `title_match` and `author_match` matter:
 - If either is false in a close/ambiguous case, we reject and leave untouched.
 - This protects no-metadata cases where filename parsing may be wrong.
 
-## Sync Targets (Kavita, Readarr, and Equivalent)
-
-### Kavita
-
-Enable with:
-
-- `--kavita-scan` or `EBOOK_KAVITA_SCAN=true`
-- set `--kavita-api-key` / `EBOOK_KAVITA_API_KEY`
-- optional `--kavita-library-id` / `EBOOK_KAVITA_LIBRARY_ID`
-
-### Bookshelf/Readarr/Forks
-
-Enable with:
-
-- `--readarr-scan` or `EBOOK_READARR_SCAN=true`
-- set `--readarr-api-key` / `EBOOK_READARR_API_KEY`
-
-Command payload examples (`EBOOK_READARR_COMMAND_JSON`):
-
-- default full folder rescan:
-
-```json
-{"name":"RescanFolders"}
-```
-
-- custom payload example (depends on your Readarr version and enabled commands):
-
-```json
-{"name":"RescanFolders","filterKey":"all"}
-```
-
-Tip: command names/fields can vary by version. Check your instance command schema/endpoints before changing payloads.
-
-Readarr rename safety recommendation:
-
-- In Readarr Media Management, disable broad auto-renaming/organizing for library scans if this script is your canonical organizer.
-- Prefer settings that only rename/manage content Readarr downloaded itself.
-- Option names vary by version; verify with a dry-run workflow in your environment.
-
 ## Adding Another Sync Target (and submitting a PR)
 
 Suggested pattern:
@@ -295,6 +287,24 @@ PR checklist:
 - keep behavior non-destructive for metadata
 - include tests for new decision paths
 - include clear docs for env vars and example payloads
+
+## Virtualenv Portability
+
+The script keeps a portable shebang (`#!/usr/bin/env python3`) and then tries to re-exec into local venv Python before importing dependencies.
+
+Lookup order for interpreter re-exec:
+
+1. `EBOOK_PYTHON`
+2. `EBOOK_VENV/bin/python`
+3. `<script_dir>/.venv/bin/python`
+4. `<cwd>/.venv/bin/python`
+5. parent directories' `.venv/bin/python`
+
+Overrides:
+
+- `EBOOK_PYTHON`: explicit Python path
+- `EBOOK_VENV`: explicit venv path
+- `EBOOK_SKIP_VENV_REEXEC=1`: disable re-exec
 
 ## Tests and Collaboration Workflow
 
